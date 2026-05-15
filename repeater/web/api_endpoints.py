@@ -59,6 +59,7 @@ logger = logging.getLogger("HTTPServer")
 # POST   /api/update_advert_rate_limit_config - Update advert rate limiting settings
 # GET    /api/mqtt_status - Get MQTT Observer connection status
 # POST   /api/update_mqtt_config - Update MQTT Observer configuration
+# GET    /api/broker_presets - List bundled MC2MQTT broker presets (waev, letsmesh, …)
 
 # Packets
 # GET    /api/packet_stats?hours=24 - Get packet statistics
@@ -1157,6 +1158,60 @@ class APIEndpoints:
             })
         except Exception as e:
             logger.error(f"Error getting MQTT status: {e}")
+            return self._error(str(e))
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def broker_presets(self):
+        """List bundled MC2MQTT broker presets.
+
+        GET /api/broker_presets
+
+        Returns the sorted list of ``repeater/presets/*.yaml`` packaged
+        with this build, in a UI-ready shape so the admin frontend's
+        "From Template" dropdown does not need to bundle its own copy
+        of the broker catalogue.
+
+        Response:
+            {
+              "success": true,
+              "data": [
+                {
+                  "id": "waev",                # preset filename stem
+                  "name": "Waev",              # YAML display_name, or titlecased id
+                  "website": "https://waev.app",  # optional, omitted if absent
+                  "brokers": [ ... raw broker dicts from the YAML ... ]
+                },
+                ...
+              ]
+            }
+
+        Unauthenticated by design - the response contains only public
+        broker hostnames and TLS hints, mirroring the access policy on
+        ``mqtt_status``.
+        """
+        self._set_cors_headers()
+        try:
+            # Imported lazily so a broken/missing yaml in the presets
+            # package never blocks process startup; the loader logs and
+            # skips bad files.
+            from repeater.presets import get_preset, list_presets
+
+            data = []
+            for preset_id in list_presets():
+                preset = get_preset(preset_id) or {}
+                entry = {
+                    "id": preset_id,
+                    "name": preset.get("display_name") or preset_id.title(),
+                    "brokers": list(preset.get("brokers", [])),
+                }
+                website = preset.get("website")
+                if website:
+                    entry["website"] = website
+                data.append(entry)
+            return self._success(data)
+        except Exception as e:
+            logger.error(f"Error listing broker presets: {e}")
             return self._error(str(e))
 
     @cherrypy.expose

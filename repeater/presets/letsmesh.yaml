@@ -9,6 +9,13 @@
 #
 # Note: order matters for backward compatibility with the legacy
 # letsmesh.broker_index field. Index 0 is Europe, index 1 is US West.
+#
+# Optional UI metadata. Consumed by the GET /api/broker_presets endpoint
+# so the React/Vue admin can render this preset in the "From Template"
+# dropdown. `display_name` and `website` are advisory only — they are
+# never read by the runtime broker connection code.
+display_name: "LetsMesh"
+website: "https://letsmesh.net"
 brokers:
   - name: "Europe (LetsMesh v1)"
     enabled: true

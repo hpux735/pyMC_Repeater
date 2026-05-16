@@ -15,12 +15,26 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compute package version
+        id: package_version
+        run: |
+          python -m pip install --disable-pip-version-check setuptools_scm
+          version="$(python -m setuptools_scm)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -45,7 +59,27 @@ jobs:
           file: ./dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            PACKAGE_VERSION=${{ steps.package_version.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Notify Home Assistant add-on repository
+        env:
+          DISPATCH_TOKEN: ${{ secrets.HA_ADDON_REPO_DISPATCH_TOKEN }}
+          CHANNEL: ${{ github.ref_name }}
+          REVISION: ${{ github.sha }}
+        run: |
+          if [ -z "${DISPATCH_TOKEN}" ]; then
+            echo "HA_ADDON_REPO_DISPATCH_TOKEN is not set" >&2
+            exit 1
+          fi
+
+          curl -fsSL \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
+            https://api.github.com/repos/pyMC-dev/pyMC-HA-Add-on/dispatches \
+            -d "{\"event_type\":\"sync-upstream-channel\",\"client_payload\":{\"channel\":\"${CHANNEL}\",\"revision\":\"${REVISION}\"}}"

@@ -22,5 +22,5 @@ services:
     group_add:
      - plugdev
     volumes:
-      - ./config.yaml:/etc/pymc_repeater/config.yaml
+      - ./config:/etc/pymc_repeater
       - ./data:/var/lib/pymc_repeater

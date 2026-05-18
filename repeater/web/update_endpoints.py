@@ -29,7 +29,7 @@ from datetime import datetime
 from typing import List, Optional
 
 import cherrypy
-from repeater.service_utils import is_buildroot
+from repeater.service_utils import get_container_restart_message, is_buildroot, is_container
 
 logger = logging.getLogger("HTTPServer")
 
@@ -891,7 +891,13 @@ def _do_install() -> None:
             restart_msg = str(exc)
             logger.warning(f"[Update] Could not restart service: {exc}")
         if restart_ok:
-            _state.finish_install(True, f"Upgraded to latest on channel '{channel}' – service restarted")
+            if is_container():
+                _state.finish_install(
+                    True,
+                    f"Upgraded to latest on channel '{channel}' – {get_container_restart_message()}",
+                )
+            else:
+                _state.finish_install(True, f"Upgraded to latest on channel '{channel}' – service restarted")
         else:
             _state.finish_install(False, f"Upgrade succeeded but service restart failed: {restart_msg}")
     else:

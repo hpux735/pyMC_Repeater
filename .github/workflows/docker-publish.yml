@@ -52,11 +52,26 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Determine image repository
+        id: image_repo
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.image_repository }}" ]; then
+            image_repository="${{ inputs.image_repository }}"
+          elif [ "${{ github.repository }}" = "yellowcooln/pyMC_Repeater" ]; then
+            image_repository="yellowcooln/pymc-repeater"
+          else
+            image_repository="pymcdev/pymc-repeater"
+          fi
+
+          echo "Using image repository: ${image_repository}"
+          echo "image_repository=${image_repository}" >> "$GITHUB_OUTPUT"
+
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ github.event_name == 'workflow_dispatch' && inputs.image_repository || 'pymcdev/pymc-repeater' }}
+          images: ${{ steps.image_repo.outputs.image_repository }}
           tags: |
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}

@@ -83,6 +83,15 @@ def _schedule_container_exit(delay_seconds: float = _CONTAINER_RESTART_DELAY_SEC
     threading.Thread(target=_exit_process, name="container-restart-exit", daemon=True).start()
 
 
+def get_container_restart_message() -> str:
+    """Return the user-facing restart message for containerized installs."""
+    return (
+        "Container restart initiated. "
+        "If you are running pyMC Repeater via Docker or Home Assistant, pull or rebuild "
+        "a newer image for packaged image updates to take effect."
+    )
+
+
 def restart_service() -> Tuple[bool, str]:
     """
     Restart the pymc-repeater service.
@@ -98,7 +107,7 @@ def restart_service() -> Tuple[bool, str]:
     if is_container():
         _schedule_container_exit()
         logger.info("Container environment detected; scheduled process exit for container restart")
-        return True, "Container restart initiated"
+        return True, get_container_restart_message()
 
     if is_buildroot():
         if not os.path.exists(INIT_SCRIPT):

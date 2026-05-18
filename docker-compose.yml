@@ -1,6 +1,10 @@
 services:
   pymc-repeater:
-    build: .
+    build:
+      context: .
+      args:
+        PUID: ${PUID:-1000}
+        PGID: ${PGID:-1000}
     container_name: pymc-repeater
     restart: unless-stopped
     ports:

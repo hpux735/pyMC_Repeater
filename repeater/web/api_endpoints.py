@@ -317,13 +317,18 @@ class APIEndpoints:
             )
             has_default_password = admin_password in ["admin123", ""]
 
-            needs_setup = has_default_name or has_default_password
+            radio_type_raw = config.get("radio_type")
+            radio_type = "" if radio_type_raw is None else str(radio_type_raw).lower().strip()
+            radio_not_configured = radio_type in ("", "none", "null", "disabled", "off", "no_radio")
+
+            needs_setup = has_default_name or has_default_password or radio_not_configured
 
             return {
                 "needs_setup": needs_setup,
                 "reasons": {
                     "default_name": has_default_name,
                     "default_password": has_default_password,
+                    "radio_not_configured": radio_not_configured,
                 },
             }
         except Exception as e:
@@ -577,7 +582,7 @@ class APIEndpoints:
             result_config = {
                 "node_name": node_name,
                 "hardware": hardware_key,
-                "radio_type": config_yaml.get("radio_type", "sx1262"),
+                "radio_type": config_yaml.get("radio_type"),
                 "frequency": freq_mhz,
                 "spreading_factor": radio_preset.get("spreading_factor"),
                 "bandwidth": radio_preset.get("bandwidth"),

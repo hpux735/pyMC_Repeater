@@ -1,7 +1,3 @@
-# Default Repeater Configuration
-# radio_type: sx1262 | kiss (use kiss for serial KISS TNC modem)
-radio_type: sx1262
-
 repeater:
   # Node name for logging and identification
   node_name: "mesh-repeater-01"
@@ -317,6 +313,7 @@ identities:
 #   - kiss          (KISS-modem over a serial port; alias: kiss-modem)
 #   - pymc_tcp      (pymc_usb firmware modem over Wi-Fi/TCP)
 #   - pymc_usb      (pymc_usb firmware modem over USB-CDC)
+#   - null/none     (disable radio hardware; daemon starts without RF I/O)
 radio_type: sx1262
 
 # CH341 USB-to-SPI adapter settings (only used when radio_type: sx1262_ch341)

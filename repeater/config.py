@@ -2,11 +2,45 @@ import base64
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, overload
 
 import yaml
 
 logger = logging.getLogger("Config")
+
+
+class NullRadio:
+    """No-op radio used when radio_type disables hardware initialization."""
+
+    def __init__(self):
+        self._rx_callback = None
+
+    def begin(self):
+        return True
+
+    async def send(self, data: bytes):
+        raise RuntimeError("Radio is disabled (radio_type is null/none)")
+
+    async def wait_for_rx(self) -> bytes:
+        import asyncio
+
+        while True:
+            await asyncio.sleep(3600)
+
+    def sleep(self):
+        return None
+
+    def get_last_rssi(self) -> int:
+        return 0
+
+    def get_last_snr(self) -> float:
+        return 0.0
+
+    def set_rx_callback(self, callback):
+        self._rx_callback = callback
+
+    def check_radio_health(self):
+        return True
 
 
 def resolve_storage_dir(
@@ -299,7 +333,13 @@ def _load_or_create_identity_key(path: Optional[str] = None) -> bytes:
 
 def get_radio_for_board(board_config: dict):
 
-    def _parse_int(value, *, default=None) -> int:
+    @overload
+    def _parse_int(value, *, default: None = None) -> Optional[int]: ...
+
+    @overload
+    def _parse_int(value, *, default: int) -> int: ...
+
+    def _parse_int(value, *, default=None):
         if value is None:
             return default
         if isinstance(value, int):
@@ -322,7 +362,16 @@ def get_radio_for_board(board_config: dict):
             return [_parse_int(item) for item in stripped.split(",") if item.strip()]
         raise ValueError(f"Invalid int list value type: {type(value)}")
 
-    radio_type = board_config.get("radio_type", "sx1262").lower().strip()
+    radio_type_raw = board_config.get("radio_type")
+    if radio_type_raw is None:
+        radio_type = "none"
+    else:
+        radio_type = str(radio_type_raw).lower().strip()
+
+    if radio_type in ("", "none", "null", "disabled", "off", "no_radio"):
+        logger.warning("Radio disabled by configuration (radio_type=%r)", radio_type_raw)
+        return NullRadio()
+
     if radio_type == "kiss-modem":
         radio_type = "kiss"
 
@@ -483,7 +532,7 @@ def get_radio_for_board(board_config: dict):
             spreading_factor=int(radio_cfg.get("spreading_factor", 8)),
             coding_rate=int(radio_cfg.get("coding_rate", 8)),
             tx_power=int(radio_cfg.get("tx_power", 22)),
-            sync_word=_parse_int(radio_cfg.get("sync_word", 0x12)),
+            sync_word=_parse_int(radio_cfg.get("sync_word", 0x12), default=0x12),
             preamble_length=int(radio_cfg.get("preamble_length", 16)),
             lbt_enabled=bool(tcp_cfg.get("lbt_enabled", True)),
             lbt_max_attempts=int(tcp_cfg.get("lbt_max_attempts", 5)),
@@ -527,7 +576,7 @@ def get_radio_for_board(board_config: dict):
             spreading_factor=int(radio_cfg.get("spreading_factor", 8)),
             coding_rate=int(radio_cfg.get("coding_rate", 8)),
             tx_power=int(radio_cfg.get("tx_power", 22)),
-            sync_word=_parse_int(radio_cfg.get("sync_word", 0x12)),
+            sync_word=_parse_int(radio_cfg.get("sync_word", 0x12), default=0x12),
             preamble_length=int(radio_cfg.get("preamble_length", 16)),
             lbt_enabled=bool(usb_cfg.get("lbt_enabled", True)),
             lbt_max_attempts=int(usb_cfg.get("lbt_max_attempts", 5)),

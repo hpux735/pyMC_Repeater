@@ -97,7 +97,8 @@ class RepeaterDaemon:
         #-----------------------------------------------
 
         if self.radio is None:
-            radio_type = self.config.get("radio_type", "sx1262")
+            radio_type_raw = self.config.get("radio_type")
+            radio_type = "none" if radio_type_raw is None else str(radio_type_raw)
             logger.info(f"Initializing radio hardware... (radio_type={radio_type})")
             try:
                 self.radio = get_radio_for_board(self.config)
@@ -1200,7 +1201,9 @@ class RepeaterDaemon:
 
         # Release CH341 USB device if in use
         try:
-            if self.config.get("radio_type", "sx1262").lower() == "sx1262_ch341":
+            radio_type_raw = self.config.get("radio_type")
+            radio_type = "" if radio_type_raw is None else str(radio_type_raw).lower()
+            if radio_type == "sx1262_ch341":
                 from pymc_core.hardware.ch341.ch341_async import CH341Async
 
                 CH341Async.reset_instance()

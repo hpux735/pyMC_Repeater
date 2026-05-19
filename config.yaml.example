@@ -369,8 +369,7 @@ radio:
 #   baud_rate: 9600
 
 # pymc_usb firmware modem over Wi-Fi/TCP (when radio_type: pymc_tcp).
-# Requires pyMC_core with the TCPLoRaRadio driver (PR pyMC-dev/pyMC_core#68,
-# merged into dev on 2026-05-13).
+# Requires pyMC_core with the TCPLoRaRadio driver
 # pymc_tcp:
 #   host: "pymc-3e2834.local"   # modem hostname / mDNS name / LAN IP
 #   port: 5055                  # firmware default
@@ -380,7 +379,7 @@ radio:
 #   lbt_max_attempts: 5
 
 # pymc_usb firmware modem over USB-CDC (when radio_type: pymc_usb).
-# Requires pyMC_core with the USBLoRaRadio driver (PR pyMC-dev/pyMC_core#68).
+# Requires pyMC_core with the USBLoRaRadio driver
 # pymc_usb:
 #   port: "/dev/ttyACM0"        # USB-CDC device; udev rule may symlink to /dev/lora-modem
 #   baudrate: 921600            # must match firmware monitor_speed

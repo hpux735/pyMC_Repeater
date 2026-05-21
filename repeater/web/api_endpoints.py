@@ -2718,6 +2718,8 @@ class APIEndpoints:
             # 0 = 1-byte (legacy), 1 = 2-byte, 2 = 3-byte
             path_hash_mode = self.config.get("mesh", {}).get("path_hash_mode", 0)
             byte_count = {0: 1, 1: 2, 2: 3}.get(path_hash_mode, 1)
+
+            trace_flags = {1: 0x00, 2: 0x01}.get(byte_count, 0x00)
             hex_chars = byte_count * 2
             max_hash = (1 << (byte_count * 8)) - 1
 
@@ -2752,7 +2754,7 @@ class APIEndpoints:
 
             path_bytes = list(target_hash.to_bytes(byte_count, "big"))
             packet = PacketBuilder.create_trace(
-                tag=trace_tag, auth_code=0x12345678, flags=0x00, path=path_bytes
+                tag=trace_tag, auth_code=0x12345678, flags=trace_flags, path=path_bytes
             )
 
             # Wait for response with timeout

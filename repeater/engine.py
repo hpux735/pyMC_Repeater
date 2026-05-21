@@ -36,7 +36,7 @@ LOOP_DETECT_MINIMAL = "minimal"
 LOOP_DETECT_MODERATE = "moderate"
 LOOP_DETECT_STRICT = "strict"
 
-# Thresholds for 1-byte path hashes loop detection.
+# Thresholds for flood loop detection (hash-size-aware: 1, 2, or 3 bytes per hop).
 # Count how many times our own hash already exists in the incoming FLOOD path.
 # If occurrences >= threshold, treat as loop and drop.
 LOOP_DETECT_MAX_COUNTERS = {
@@ -742,8 +742,14 @@ class RepeaterHandler(BaseHandler):
         if max_counter is None:
             return False
 
+        hash_size = packet.get_path_hash_size()
+        hop_count = packet.get_path_hash_count()
         path = packet.path or bytearray()
-        local_count = sum(1 for hop in path if hop == self.local_hash)
+        local_hash = self.local_hash_bytes[:hash_size]
+        local_count = sum(
+            1 for i in range(hop_count)
+            if bytes(path[i * hash_size:(i + 1) * hash_size]) == local_hash
+        )
         return local_count >= max_counter
 
     def _check_transport_codes(self, packet: Packet) -> Tuple[bool, str]:

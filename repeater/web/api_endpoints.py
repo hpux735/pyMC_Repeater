@@ -136,6 +136,7 @@ logger = logging.getLogger("HTTPServer")
 
 # Setup Wizard
 # GET    /api/needs_setup - Check if repeater needs initial setup
+# GET    /api/site_info - Get site identification name (public, no auth required)
 # GET    /api/hardware_options - Get available hardware configurations
 # GET    /api/radio_presets - Get radio preset configurations
 # GET    /api/serial_ports - Discover available serial/USB modem device paths
@@ -347,6 +348,17 @@ class APIEndpoints:
         except Exception as e:
             logger.error(f"Error checking setup status: {e}")
             return {"needs_setup": False, "error": str(e)}
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def site_info(self):
+        """Return the site identification name (public endpoint, no auth required)."""
+        try:
+            site_name = self.config.get("web", {}).get("site_name", "") or ""
+            return {"success": True, "site_name": str(site_name)}
+        except Exception as e:
+            logger.error(f"Error serving site_info: {e}")
+            return {"success": True, "site_name": ""}
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
@@ -754,6 +766,7 @@ class APIEndpoints:
             stats["kiss"] = self.config.get("kiss", {})
             stats["pymc_usb"] = self.config.get("pymc_usb", {})
             stats["pymc_tcp"] = self.config.get("pymc_tcp", {})
+            stats["site_name"] = self.config.get("web", {}).get("site_name", "")
             stats["version"] = __version__
             try:
                 import pymc_core

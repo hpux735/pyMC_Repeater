@@ -335,6 +335,9 @@ class HTTPStatsServer:
                 "/api/needs_setup": {
                     "tools.require_auth.on": False,
                 },
+                "/api/site_info": {
+                    "tools.require_auth.on": False,
+                },
                 "/api/hardware_options": {
                     "tools.require_auth.on": False,
                 },

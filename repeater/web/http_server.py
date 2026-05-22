@@ -341,6 +341,9 @@ class HTTPStatsServer:
                 "/api/radio_presets": {
                     "tools.require_auth.on": False,
                 },
+                "/api/serial_ports": {
+                    "tools.require_auth.on": False,
+                },
                 "/api/setup_wizard": {
                     "tools.require_auth.on": False,
                 },

@@ -549,13 +549,26 @@ class APIEndpoints:
             config_yaml["radio"]["bandwidth"] = int(bw_khz * 1000)
             config_yaml["radio"]["coding_rate"] = int(radio_preset.get("coding_rate", 5))
 
+            tx_power_raw = radio_preset.get("tx_power")
+            tx_power_preset = None
+            if tx_power_raw not in (None, ""):
+                try:
+                    tx_power_preset = int(tx_power_raw)
+                except (TypeError, ValueError):
+                    return {"success": False, "error": "TX power must be an integer"}
+                if tx_power_preset < -9 or tx_power_preset > 22:
+                    return {
+                        "success": False,
+                        "error": "TX power must be between -9 and +22 dBm",
+                    }
+
             if hardware_key == "kiss":
                 # KISS modem: set radio_type and kiss section (port/baud from request or defaults)
                 config_yaml["radio_type"] = "kiss"
                 kiss_port = (data.get("kiss_port") or "").strip() or "/dev/ttyUSB0"
                 kiss_baud = int(data.get("kiss_baud_rate", data.get("kiss_baud", 115200)))
                 config_yaml["kiss"] = {"port": kiss_port, "baud_rate": kiss_baud}
-                config_yaml["radio"]["tx_power"] = int(radio_preset.get("tx_power", 14))
+                config_yaml["radio"]["tx_power"] = tx_power_preset if tx_power_preset is not None else 14
                 if "preamble_length" not in config_yaml["radio"]:
                     config_yaml["radio"]["preamble_length"] = 17
             elif hardware_key == "pymc_usb":
@@ -572,7 +585,9 @@ class APIEndpoints:
                 pymc_usb_section["baudrate"] = usb_baud
                 pymc_usb_section.setdefault("lbt_enabled", True)
                 pymc_usb_section.setdefault("lbt_max_attempts", 5)
-                if "tx_power" in hw_config:
+                if tx_power_preset is not None:
+                    config_yaml["radio"]["tx_power"] = tx_power_preset
+                elif "tx_power" in hw_config:
                     config_yaml["radio"]["tx_power"] = hw_config.get("tx_power", 22)
                 if "preamble_length" in hw_config:
                     config_yaml["radio"]["preamble_length"] = hw_config.get("preamble_length", 16)
@@ -597,7 +612,9 @@ class APIEndpoints:
                 pymc_tcp_section.setdefault("connect_timeout", 5.0)
                 pymc_tcp_section.setdefault("lbt_enabled", True)
                 pymc_tcp_section.setdefault("lbt_max_attempts", 5)
-                if "tx_power" in hw_config:
+                if tx_power_preset is not None:
+                    config_yaml["radio"]["tx_power"] = tx_power_preset
+                elif "tx_power" in hw_config:
                     config_yaml["radio"]["tx_power"] = hw_config.get("tx_power", 22)
                 if "preamble_length" in hw_config:
                     config_yaml["radio"]["preamble_length"] = hw_config.get("preamble_length", 16)
@@ -619,7 +636,9 @@ class APIEndpoints:
                     if pid is not None:
                         config_yaml["ch341"]["pid"] = pid
 
-                if "tx_power" in hw_config:
+                if tx_power_preset is not None:
+                    config_yaml["radio"]["tx_power"] = tx_power_preset
+                elif "tx_power" in hw_config:
                     config_yaml["radio"]["tx_power"] = hw_config.get("tx_power", 22)
                 if "preamble_length" in hw_config:
                     config_yaml["radio"]["preamble_length"] = hw_config.get("preamble_length", 17)

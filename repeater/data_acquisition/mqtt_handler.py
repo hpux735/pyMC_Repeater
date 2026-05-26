@@ -208,7 +208,21 @@ class _BrokerConnection:
         })
         
         client_id = f"meshcore_{self.public_key}_{broker['host']}_{self.format}"
-        self.client = mqtt.Client(client_id=client_id, transport=self.transport)
+        client_kwargs = {
+            "client_id": client_id,
+            "transport": self.transport,
+        }
+        # Prefer callback API v2 when available (paho-mqtt>=2.x) to avoid
+        # deprecation warnings from the legacy callback API v1.
+        callback_api = getattr(mqtt, "CallbackAPIVersion", None)
+        if callback_api is not None and hasattr(callback_api, "VERSION2"):
+            client_kwargs["callback_api_version"] = callback_api.VERSION2
+        try:
+            self.client = mqtt.Client(**client_kwargs)
+        except TypeError:
+            # Backward-compatibility fallback for older paho versions.
+            client_kwargs.pop("callback_api_version", None)
+            self.client = mqtt.Client(**client_kwargs)
         if hasattr(self.client, "on_pre_connect"):
             self.client.on_pre_connect = self._on_pre_connect
         self.client.on_connect = self._on_connect
@@ -295,9 +309,10 @@ class _BrokerConnection:
 
         return token
 
-    def _on_connect(self, client, userdata, flags, rc):
+    def _on_connect(self, client, userdata, flags, rc, properties=None):
         """MQTT connection callback"""
-        if rc == 0:
+        rc_value = int(getattr(rc, "value", rc)) if rc is not None else -1
+        if rc_value == 0:
             logger.info(f"Connected to {self.broker['name']}")
             self._running = True
             self._reconnect_attempts = 0  # Reset counter on success
@@ -310,7 +325,7 @@ class _BrokerConnection:
             if self._on_connect_callback:
                 self._on_connect_callback(self.broker["name"])
         else:
-            error_msg = get_mqtt_error_message(rc, is_disconnect=False)
+            error_msg = get_mqtt_error_message(rc_value, is_disconnect=False)
             logger.error(f"Failed to connect to {self.broker['name']}: {error_msg}")
             self._schedule_reconnect(reason=error_msg)
 
@@ -321,8 +336,14 @@ class _BrokerConnection:
         if self.use_jwt_auth:
             self._set_credentials()
 
-    def _on_disconnect(self, client, userdata, rc):
+    def _on_disconnect(self, client, userdata, rc, *extra):
         """MQTT disconnection callback"""
+        # Callback API v2 passes: (client, userdata, disconnect_flags, reason_code, properties)
+        # while API v1 passes: (client, userdata, rc). Normalize to integer rc.
+        if not isinstance(rc, (int, float)) and extra:
+            rc = extra[0]
+        rc_value = int(getattr(rc, "value", rc)) if rc is not None else -1
+
         was_running = self._running
         self._running = False
 
@@ -332,14 +353,14 @@ class _BrokerConnection:
                 self._on_disconnect_callback(self.broker["name"])
             return
 
-        if rc != 0:  # Unexpected disconnect
-            error_msg = get_mqtt_error_message(rc, is_disconnect=True)
+        if rc_value != 0:  # Unexpected disconnect
+            error_msg = get_mqtt_error_message(rc_value, is_disconnect=True)
             if was_running:
-                logger.warning(f"Disconnected from {self.broker['name']} (rc={rc}): {error_msg}")
+                logger.warning(f"Disconnected from {self.broker['name']} (rc={rc_value}): {error_msg}")
             else:
                 logger.debug(
                     f"Duplicate disconnect callback from {self.broker['name']} while already disconnected "
-                    f"(rc={rc}): {error_msg}"
+                    f"(rc={rc_value}): {error_msg}"
                 )
             if was_running:  # Only reconnect if we were intentionally connected
                 self._schedule_reconnect(reason=error_msg)
@@ -1091,7 +1112,14 @@ def get_mqtt_error_message(rc: int, is_disconnect: bool = False) -> str:
             if _fallback is None:
                 logger.debug(f"Could not decode reason code {rc}: {e}")
 
+    error_dict = disconnect_errors if is_disconnect else connect_errors
     if is_disconnect:
+        mapped = error_dict.get(rc)
+        if mapped is not None:
+            if rc >= 128 and "(code" not in mapped:
+                return f"{mapped} (code {rc})"
+            return mapped
+
         try:
             paho_error = mqtt.error_string(rc)
             if paho_error and paho_error != "Unknown error.":
@@ -1099,5 +1127,4 @@ def get_mqtt_error_message(rc: int, is_disconnect: bool = False) -> str:
         except Exception:
             pass
 
-    error_dict = disconnect_errors if is_disconnect else connect_errors
     return error_dict.get(rc, f"Unknown error code {rc}")

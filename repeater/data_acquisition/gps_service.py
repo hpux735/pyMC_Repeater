@@ -594,11 +594,21 @@ class GPSService:
         self.api_fallback_to_config_location = bool(
             gps_config.get("api_fallback_to_config_location", True)
         )
+        # Backward-compatible alias: use_gps_for_repeater_location=True means
+        # GPS advertising is enabled for repeater-originated location fields.
+        legacy_use_gps_location = gps_config.get("use_gps_for_repeater_location")
+        advertise_gps_default = bool(legacy_use_gps_location) if legacy_use_gps_location is not None else False
         self.advertise_gps_location = bool(
-            gps_config.get("advertise_gps_location", False)
+            gps_config.get("advertise_gps_location", advertise_gps_default)
+        )
+        # Backward-compatible alias: repeater_location_precision_digits
+        # predates location_precision_digits.
+        precision_value = gps_config.get(
+            "location_precision_digits",
+            gps_config.get("repeater_location_precision_digits"),
         )
         self.location_precision_digits = _normalize_precision_digits(
-            gps_config.get("location_precision_digits")
+            precision_value
         )
         self.source = str(gps_config.get("source", "serial")).lower()
         self.device = gps_config.get("device", "/dev/serial0")
@@ -618,11 +628,19 @@ class GPSService:
         self.time_sync_min_valid_year = int(gps_config.get("time_sync_min_valid_year", 2020))
         self._clock_setter = clock_setter or _set_system_clock_from_datetime
         self._time_provider = time_provider or time.time
+        # Backward-compatible alias: update_repeater_location_from_fix
+        # predates persist_gps_fix_to_config.
+        legacy_update_from_fix = gps_config.get("update_repeater_location_from_fix")
+        persist_fix_default = bool(legacy_update_from_fix) if legacy_update_from_fix is not None else False
         self.persist_gps_fix_enabled = bool(
-            gps_config.get("persist_gps_fix_to_config", False)
+            gps_config.get("persist_gps_fix_to_config", persist_fix_default)
+        )
+        persist_interval_value = gps_config.get(
+            "persist_gps_fix_interval_seconds",
+            gps_config.get("location_update_interval_seconds", 600.0),
         )
         self.persist_gps_fix_interval_seconds = max(
-            1.0, float(gps_config.get("persist_gps_fix_interval_seconds", 600.0))
+            1.0, float(persist_interval_value)
         )
         self._location_update_callback = location_update_callback
         self._location_update_lock = threading.RLock()
@@ -731,6 +749,7 @@ class GPSService:
             "source": "config",
             "advertise_gps_location": self.advertise_gps_location,
             "location_precision_digits": self.location_precision_digits,
+            "precision_digits": self.location_precision_digits,
         }
 
         if not self.advertise_gps_location:
@@ -749,6 +768,7 @@ class GPSService:
                 "source": "gps",
                 "advertise_gps_location": True,
                 "location_precision_digits": self.location_precision_digits,
+                "precision_digits": self.location_precision_digits,
             }
 
         return {
@@ -892,6 +912,7 @@ class GPSService:
             "status": deepcopy(snapshot.get("status") or {}),
             "time": deepcopy(snapshot.get("time") or {}),
             "location_precision_digits": self.location_precision_digits,
+            "precision_digits": self.location_precision_digits,
         }
         try:
             updated = bool(self._location_update_callback(payload))

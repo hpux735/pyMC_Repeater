@@ -9,11 +9,13 @@ import pytest
 from repeater.sensors import SensorBase, SensorManager, SensorRegistry
 from repeater.sensors import ens210 as ens210_module
 from repeater.sensors import ina219 as ina219_module
+from repeater.sensors import lafvin_ups_3s as lafvin_ups_3s_module
 from repeater.sensors import shtc3 as shtc3_module
 from repeater.sensors import waveshare_ups_d as waveshare_ups_d_module
 from repeater.sensors import waveshare_ups_e as waveshare_ups_e_module
 from repeater.sensors.ens210 import ENS210Sensor
 from repeater.sensors.ina219 import INA219Sensor
+from repeater.sensors.lafvin_ups_3s import LafvinUps3sSensor
 from repeater.sensors.shtc3 import SHTC3Sensor
 from repeater.sensors.waveshare_ups_d import WaveshareUpsDSensor
 from repeater.sensors.waveshare_ups_e import WaveshareUpsESensor
@@ -308,3 +310,83 @@ def test_waveshare_ups_e_sensor_reads_pack_state(monkeypatch):
     assert reading["data"]["low_cell_warning"] is True
     assert reading["data"]["time_to_full_min"] == 90
     assert "time_to_empty_min" not in reading["data"]
+
+
+def test_lafvin_pack_voltage_to_percent_piecewise_bounds():
+    assert lafvin_ups_3s_module._pack_voltage_to_percent(12.6) == 100
+    assert lafvin_ups_3s_module._pack_voltage_to_percent(12.0) == 85
+    assert lafvin_ups_3s_module._pack_voltage_to_percent(11.4) == 60
+    assert lafvin_ups_3s_module._pack_voltage_to_percent(11.1) == 39
+    assert lafvin_ups_3s_module._pack_voltage_to_percent(10.5) == 15
+    assert lafvin_ups_3s_module._pack_voltage_to_percent(9.0) == 0
+    assert lafvin_ups_3s_module._pack_voltage_to_percent(8.5) == 0
+
+
+def test_lafvin_sensor_handles_missing_dependency(monkeypatch):
+    monkeypatch.setattr(
+        SensorBase,
+        "ensure_python_modules",
+        lambda self, modules: False,
+    )
+
+    sensor = LafvinUps3sSensor("battery")
+    reading = sensor.read()
+
+    assert sensor.available is False
+    assert reading["ok"] is False
+    assert "not available" in reading["error"]
+
+
+def test_lafvin_sensor_reads_pack_state(monkeypatch):
+    class _Bus:
+        def __init__(self, bus_number):
+            self.bus_number = bus_number
+
+        def write_i2c_block_data(self, addr, register, data):
+            return None
+
+        def read_i2c_block_data(self, addr, register, length):
+            values = {
+                lafvin_ups_3s_module._REG_BUS: [0x1F, 0x40],
+                lafvin_ups_3s_module._REG_SHUNT: [0x00, 0x64],
+                lafvin_ups_3s_module._REG_CURRENT: [0xFC, 0x18],
+                lafvin_ups_3s_module._REG_POWER: [0x00, 0x64],
+            }
+            return values[register]
+
+        def close(self):
+            return None
+
+    _install_fake_smbus2(monkeypatch, _Bus)
+    monkeypatch.setattr(lafvin_ups_3s_module.time, "sleep", lambda *_args, **_kwargs: None)
+
+    reading = LafvinUps3sSensor("battery").read()
+
+    assert reading["ok"] is True
+    assert reading["data"]["bus_voltage_v"] == 4.0
+    assert reading["data"]["battery_percent"] == 0
+    assert reading["data"]["charge_state"] == "charging"
+    assert reading["data"]["current_ma"] == pytest.approx(-152.6, abs=0.2)
+    assert reading["data"]["power_mw"] == pytest.approx(305.2, abs=0.2)
+
+
+def test_lafvin_sensor_read_wraps_bus_failures(monkeypatch):
+    class _BrokenBus:
+        def __init__(self, bus_number):
+            self.bus_number = bus_number
+
+        def write_i2c_block_data(self, addr, register, data):
+            return None
+
+        def read_i2c_block_data(self, addr, register, length):
+            raise RuntimeError("i2c broken")
+
+        def close(self):
+            return None
+
+    _install_fake_smbus2(monkeypatch, _BrokenBus)
+    monkeypatch.setattr(lafvin_ups_3s_module.time, "sleep", lambda *_args, **_kwargs: None)
+
+    reading = LafvinUps3sSensor("battery").read()
+    assert reading["ok"] is False
+    assert "LAFVIN UPS 3S read failed" in reading["error"]

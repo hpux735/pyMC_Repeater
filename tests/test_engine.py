@@ -6,6 +6,7 @@ mark_seen, validate_packet, packet scoring, TX delay, cache management,
 airtime duty-cycle, TX mode (forward/monitor/no_tx), and config reloading.
 """
 import asyncio
+import base64
 import copy
 import math
 import time
@@ -139,10 +140,11 @@ def _make_direct_packet(payload: bytes = b"\x01\x02\x03\x04",
 
 def _make_transport_flood_packet(payload: bytes = b"\x01\x02\x03\x04",
                                   path: bytes = b"",
+                                  payload_type: int = 0x01,
                                   transport_codes=(0x1234, 0x5678)) -> Packet:
     """Build a TRANSPORT_FLOOD-routed packet."""
     pkt = Packet()
-    pkt.header = ROUTE_TYPE_TRANSPORT_FLOOD | (0x01 << PH_TYPE_SHIFT)
+    pkt.header = ROUTE_TYPE_TRANSPORT_FLOOD | (payload_type << PH_TYPE_SHIFT)
     pkt.payload = bytearray(payload)
     pkt.payload_len = len(payload)
     pkt.path = bytearray(path)
@@ -153,12 +155,13 @@ def _make_transport_flood_packet(payload: bytes = b"\x01\x02\x03\x04",
 
 def _make_transport_direct_packet(payload: bytes = b"\x01\x02\x03\x04",
                                    path: bytes = None,
+                                   payload_type: int = 0x01,
                                    transport_codes=(0x1234, 0x5678)) -> Packet:
     """Build a TRANSPORT_DIRECT-routed packet with path[0] == LOCAL_HASH."""
     if path is None:
         path = bytes([LOCAL_HASH, 0xCC])
     pkt = Packet()
-    pkt.header = ROUTE_TYPE_TRANSPORT_DIRECT | (0x01 << PH_TYPE_SHIFT)
+    pkt.header = ROUTE_TYPE_TRANSPORT_DIRECT | (payload_type << PH_TYPE_SHIFT)
     pkt.payload = bytearray(payload)
     pkt.payload_len = len(payload)
     pkt.path = bytearray(path)
@@ -1377,3 +1380,621 @@ class TestRecordPacketOnlyTrace:
         handler.record_packet_only(pkt, {"rssi": -80, "snr": 10.0})
         storage.record_packet.assert_not_called()
         assert len(handler.recent_packets) == n_before
+
+
+# ===================================================================
+# 18. Real packet injection through __call__
+# ===================================================================
+
+
+def _inject_from_wire(pkt: Packet) -> Packet:
+    """Serialize and deserialize a packet to simulate a real RF wire packet."""
+    wire = pkt.write_to()
+    injected = Packet()
+    injected.read_from(wire)
+    return injected
+
+
+@pytest.mark.asyncio
+class TestPacketInjectionRouting:
+    """Inject real serialized packets through __call__ and assert routing outcomes."""
+
+    @staticmethod
+    def _prepare_fast_tx(handler):
+        handler.airtime_mgr.calculate_airtime = MagicMock(return_value=20.0)
+        handler.airtime_mgr.can_transmit = MagicMock(return_value=(True, 0.0))
+        handler.airtime_mgr.record_tx = MagicMock()
+        handler.airtime_mgr.record_rx = MagicMock()
+
+    async def test_injected_flood_forwards_and_appends_path(self, handler):
+        self._prepare_fast_tx(handler)
+
+        pkt = _inject_from_wire(
+            _make_flood_packet(payload=b"\x10\x20\x30", path=b"\x11")
+        )
+
+        with (
+            patch.object(handler, "_calculate_tx_delay", return_value=0.0),
+            patch("repeater.engine.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await handler(pkt, {"snr": 7.0, "rssi": -70}, local_transmission=False)
+
+        assert handler.dispatcher.send_packet.call_count == 1
+        sent_pkt = handler.dispatcher.send_packet.call_args.args[0]
+        assert bytes(sent_pkt.path) == bytes([0x11, LOCAL_HASH])
+        assert handler.rx_count == 1
+        assert handler.forwarded_count == 1
+        assert handler.dropped_count == 0
+
+    async def test_injected_direct_forwards_and_consumes_hop(self, handler):
+        self._prepare_fast_tx(handler)
+
+        pkt = _inject_from_wire(
+            _make_direct_packet(payload=b"\xAA\xBB", path=bytes([LOCAL_HASH, 0x44, 0x55]))
+        )
+
+        with (
+            patch.object(handler, "_calculate_tx_delay", return_value=0.0),
+            patch("repeater.engine.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await handler(pkt, {"snr": 3.0, "rssi": -82}, local_transmission=False)
+
+        assert handler.dispatcher.send_packet.call_count == 1
+        sent_pkt = handler.dispatcher.send_packet.call_args.args[0]
+        assert bytes(sent_pkt.path) == b"\x44\x55"
+
+    async def test_direct_for_other_node_is_dropped(self, handler):
+        pkt = _inject_from_wire(
+            _make_direct_packet(payload=b"\xAA\xBB", path=b"\xFE\x44")
+        )
+
+        with patch("repeater.engine.asyncio.sleep", new_callable=AsyncMock):
+            await handler(pkt, {"snr": 2.0, "rssi": -90}, local_transmission=False)
+
+        assert handler.dispatcher.send_packet.call_count == 0
+        assert handler.dropped_count == 1
+        assert "not for us" in (handler.recent_packets[-1]["drop_reason"] or "")
+
+    async def test_duplicate_wire_packet_not_retransmitted(self, handler):
+        self._prepare_fast_tx(handler)
+
+        incoming = _make_flood_packet(payload=b"\x99\x88\x77", path=b"\x01")
+        pkt1 = _inject_from_wire(incoming)
+        pkt2 = _inject_from_wire(incoming)
+
+        with (
+            patch.object(handler, "_calculate_tx_delay", return_value=0.0),
+            patch("repeater.engine.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await handler(pkt1, {"snr": 6.0, "rssi": -75}, local_transmission=False)
+            await handler(pkt2, {"snr": 5.5, "rssi": -76}, local_transmission=False)
+
+        assert handler.dispatcher.send_packet.call_count == 1
+        assert handler.dropped_count == 1
+        assert handler.flood_dup_count == 1
+        original = handler.recent_packets[-1]
+        assert "duplicates" in original
+        assert len(original["duplicates"]) == 1
+        assert original["duplicates"][0]["drop_reason"] == "Duplicate"
+
+    async def test_transport_flood_injection_honors_transport_key_decision(self, handler):
+        pkt = _inject_from_wire(
+            _make_transport_flood_packet(payload=b"\x01\x02\x03\x04", path=b"")
+        )
+
+        with (
+            patch.object(handler, "_check_transport_codes", return_value=(False, "denied")),
+            patch("repeater.engine.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await handler(pkt, {"snr": 0.0, "rssi": -92}, local_transmission=False)
+
+        assert handler.dispatcher.send_packet.call_count == 0
+        assert "transport" in (handler.recent_packets[-1]["drop_reason"] or "").lower()
+
+    async def test_local_tx_then_rf_echo_is_duplicate(self, handler):
+        self._prepare_fast_tx(handler)
+
+        local_pkt = _make_flood_packet(payload=b"\x0A\x0B\x0C", path=b"")
+
+        with (
+            patch.object(handler, "_calculate_tx_delay", return_value=0.0),
+            patch("repeater.engine.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await handler(local_pkt, {"snr": 0.0, "rssi": -50}, local_transmission=True)
+            rf_echo = _inject_from_wire(
+                _make_flood_packet(payload=b"\x0A\x0B\x0C", path=b"")
+            )
+            await handler(rf_echo, {"snr": 0.0, "rssi": -70}, local_transmission=False)
+
+        assert handler.dispatcher.send_packet.call_count == 1
+        assert handler.dropped_count == 1
+        assert handler.flood_dup_count == 1
+        original = handler.recent_packets[-1]
+        assert "duplicates" in original
+        assert len(original["duplicates"]) == 1
+        assert original["duplicates"][0]["drop_reason"] == "Duplicate"
+
+    @pytest.mark.parametrize("payload_type", range(16))
+    async def test_all_payload_types_flood_injection_forwards(self, handler, payload_type):
+        self._prepare_fast_tx(handler)
+        pkt = _inject_from_wire(
+            _make_flood_packet(
+                payload=bytes([payload_type, 0xA5, 0x5A]),
+                path=b"\x11",
+                payload_type=payload_type,
+            )
+        )
+
+        with (
+            patch.object(handler, "_calculate_tx_delay", return_value=0.0),
+            patch("repeater.engine.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await handler(pkt, {"snr": 4.0, "rssi": -78}, local_transmission=False)
+
+        assert handler.dispatcher.send_packet.call_count == 1
+        sent_pkt = handler.dispatcher.send_packet.call_args.args[0]
+        assert sent_pkt.get_payload_type() == payload_type
+        assert sent_pkt.path[-1] == LOCAL_HASH
+
+    @pytest.mark.parametrize("payload_type", range(16))
+    async def test_all_payload_types_direct_injection_forwards(self, handler, payload_type):
+        self._prepare_fast_tx(handler)
+        pkt = _inject_from_wire(
+            _make_direct_packet(
+                payload=bytes([payload_type, 0x01, 0x02]),
+                path=bytes([LOCAL_HASH, 0x44, 0x55]),
+                payload_type=payload_type,
+            )
+        )
+
+        with (
+            patch.object(handler, "_calculate_tx_delay", return_value=0.0),
+            patch("repeater.engine.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await handler(pkt, {"snr": 2.5, "rssi": -84}, local_transmission=False)
+
+        assert handler.dispatcher.send_packet.call_count == 1
+        sent_pkt = handler.dispatcher.send_packet.call_args.args[0]
+        assert sent_pkt.get_payload_type() == payload_type
+        assert bytes(sent_pkt.path) == b"\x44\x55"
+
+    @pytest.mark.parametrize("payload_type", range(16))
+    async def test_all_payload_types_transport_flood_injection_forwards(self, handler, payload_type):
+        self._prepare_fast_tx(handler)
+        pkt = _inject_from_wire(
+            _make_transport_flood_packet(
+                payload=bytes([payload_type, 0x33, 0x44]),
+                path=b"",
+                payload_type=payload_type,
+                transport_codes=(0x1111, 0x2222),
+            )
+        )
+
+        with (
+            patch.object(handler, "_check_transport_codes", return_value=(True, "")),
+            patch.object(handler, "_calculate_tx_delay", return_value=0.0),
+            patch("repeater.engine.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await handler(pkt, {"snr": 1.0, "rssi": -88}, local_transmission=False)
+
+        assert handler.dispatcher.send_packet.call_count == 1
+        sent_pkt = handler.dispatcher.send_packet.call_args.args[0]
+        assert sent_pkt.get_payload_type() == payload_type
+        assert sent_pkt.transport_codes == [0x1111, 0x2222]
+
+    @pytest.mark.parametrize("payload_type", range(16))
+    async def test_all_payload_types_transport_direct_injection_forwards(self, handler, payload_type):
+        self._prepare_fast_tx(handler)
+        pkt = _inject_from_wire(
+            _make_transport_direct_packet(
+                payload=bytes([payload_type, 0x66, 0x77]),
+                path=bytes([LOCAL_HASH, 0x22]),
+                payload_type=payload_type,
+                transport_codes=(0x3333, 0x4444),
+            )
+        )
+
+        with (
+            patch.object(handler, "_calculate_tx_delay", return_value=0.0),
+            patch("repeater.engine.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await handler(pkt, {"snr": 3.0, "rssi": -83}, local_transmission=False)
+
+        assert handler.dispatcher.send_packet.call_count == 1
+        sent_pkt = handler.dispatcher.send_packet.call_args.args[0]
+        assert sent_pkt.get_payload_type() == payload_type
+        assert bytes(sent_pkt.path) == b"\x22"
+        assert sent_pkt.transport_codes == [0x3333, 0x4444]
+
+
+# ===================================================================
+# 19. Missed branch coverage (background/transport helpers)
+# ===================================================================
+
+
+class TestMissedEngineBranches:
+    """Target previously untested helper/lifecycle branches in RepeaterHandler."""
+
+    def test_check_transport_codes_accepts_matching_key_and_uses_cache(self, handler):
+        key_raw = b"0123456789ABCDEF"
+        key_b64 = base64.b64encode(key_raw).decode("ascii")
+        handler.storage.get_transport_keys.return_value = [
+            {
+                "id": 7,
+                "name": "primary",
+                "transport_key": key_b64,
+                "flood_policy": "allow",
+            }
+        ]
+
+        pkt = _make_transport_flood_packet(payload=b"\x01\x02", path=b"")
+        pkt.transport_codes = [0xCAFE, 0xBEEF]
+
+        with patch("pymc_core.protocol.transport_keys.calc_transport_code", return_value=0xCAFE):
+            allowed_1, reason_1 = handler._check_transport_codes(pkt)
+            allowed_2, reason_2 = handler._check_transport_codes(pkt)
+
+        assert allowed_1 is True and reason_1 == ""
+        assert allowed_2 is True and reason_2 == ""
+        assert handler.storage.get_transport_keys.call_count == 1
+        assert handler.storage.update_transport_key.call_count == 2
+
+    def test_record_duplicate_groups_under_original(self, handler):
+        pkt = _make_flood_packet(payload=b"\x12\x34")
+        original_hash = pkt.calculate_packet_hash().hex().upper()[:16]
+
+        original_record = {
+            "timestamp": time.time(),
+            "packet_hash": original_hash,
+            "transmitted": True,
+        }
+        handler._append_recent_packet(original_record)
+        handler.record_duplicate(pkt, rssi=-90, snr=1.5)
+
+        assert handler.flood_dup_count == 1
+        assert "duplicates" in original_record
+        assert len(original_record["duplicates"]) == 1
+        assert original_record["duplicates"][0]["drop_reason"] == "Duplicate"
+
+    @pytest.mark.asyncio
+    async def test_record_crc_errors_async_records_positive_delta(self, handler):
+        handler.dispatcher.radio.crc_error_count = 9
+        handler._last_crc_error_count = 4
+
+        await handler._record_crc_errors_async()
+
+        handler.storage.record_crc_errors.assert_called_once_with(5)
+        assert handler._last_crc_error_count == 9
+
+    @pytest.mark.asyncio
+    async def test_record_noise_floor_async_caches_and_persists(self, handler):
+        with patch.object(handler, "get_noise_floor", return_value=-117.5):
+            await handler._record_noise_floor_async()
+
+        assert handler._cached_noise_floor == -117.5
+        handler.storage.record_noise_floor.assert_called_once_with(-117.5)
+
+    @pytest.mark.asyncio
+    async def test_send_periodic_advert_async_success_and_failure(self, handler):
+        handler.send_advert_func = AsyncMock(side_effect=[True, False])
+
+        await handler._send_periodic_advert_async()
+        await handler._send_periodic_advert_async()
+
+        assert handler.send_advert_func.await_count == 2
+
+    def test_cleanup_cancels_background_task_and_closes_storage(self, handler):
+        fake_task = MagicMock()
+        fake_task.done.return_value = False
+        handler._background_task = fake_task
+
+        handler.cleanup()
+
+        fake_task.cancel.assert_called_once()
+        handler.storage.close.assert_called_once()
+
+
+# ===================================================================
+# 20. Transmission and Background Lifecycle Branches
+# ===================================================================
+
+
+class TestEngineTransmissionAndBackgroundLifecycle:
+    """Cover duty-cycle outcomes, packet-record robustness, and background timer lifecycle."""
+
+    @pytest.mark.asyncio
+    async def test_local_tx_defers_when_duty_cycle_blocked(self, handler):
+        pkt = _make_flood_packet(payload=b"\x21\x22")
+        handler.airtime_mgr.calculate_airtime = MagicMock(return_value=120.0)
+        handler.airtime_mgr.can_transmit = MagicMock(return_value=(False, 2.0))
+
+        with patch.object(handler, "_calculate_tx_delay", return_value=0.5):
+            loop = asyncio.get_running_loop()
+            completed = loop.create_future()
+            completed.set_result(None)
+
+            async def _fake_schedule(packet, delay, airtime_ms, local_transmission=False):
+                packet._tx_metadata = {
+                    "lbt_attempts": 2,
+                    "lbt_backoff_delays_ms": [10, 20],
+                    "lbt_channel_busy": True,
+                }
+                return completed
+
+            handler.schedule_retransmit = AsyncMock(side_effect=_fake_schedule)
+
+            await handler(pkt, {"snr": 0.0, "rssi": -50}, local_transmission=True)
+
+        handler.schedule_retransmit.assert_awaited_once()
+        args = handler.schedule_retransmit.await_args.args
+        assert args[0] is pkt
+        assert args[1] == pytest.approx(2.5)  # original delay + duty-cycle wait
+        assert args[2] == 120.0
+        assert handler.forwarded_count == 1
+        assert handler.dropped_count == 0
+        assert handler.recent_packets[-1]["lbt_attempts"] == 2
+
+    @pytest.mark.asyncio
+    async def test_local_deferred_tx_failure_decrements_forwarded_counter(self, handler):
+        pkt = _make_flood_packet(payload=b"\x23\x24")
+        handler.airtime_mgr.calculate_airtime = MagicMock(return_value=55.0)
+        handler.airtime_mgr.can_transmit = MagicMock(return_value=(False, 1.0))
+
+        loop = asyncio.get_running_loop()
+        failing = loop.create_future()
+        failing.set_exception(RuntimeError("deferred tx failed"))
+        handler.schedule_retransmit = AsyncMock(return_value=failing)
+
+        with patch.object(handler, "_calculate_tx_delay", return_value=0.2):
+            with pytest.raises(RuntimeError, match="deferred tx failed"):
+                await handler(pkt, {"snr": 0.0, "rssi": -52}, local_transmission=True)
+
+        assert handler.forwarded_count == 0
+
+    @pytest.mark.asyncio
+    async def test_non_local_drop_when_duty_cycle_blocked(self, handler):
+        pkt = _make_flood_packet(payload=b"\x31\x32")
+        handler.airtime_mgr.calculate_airtime = MagicMock(return_value=80.0)
+        handler.airtime_mgr.can_transmit = MagicMock(return_value=(False, 1.25))
+        handler.process_packet = MagicMock(return_value=(pkt, 0.1))
+        handler.schedule_retransmit = AsyncMock()
+
+        await handler(pkt, {"snr": 5.0, "rssi": -75}, local_transmission=False)
+
+        handler.schedule_retransmit.assert_not_awaited()
+        assert handler.dropped_count == 1
+        assert handler.forwarded_count == 0
+        assert handler.recent_packets[-1]["drop_reason"] == "Duty cycle limit"
+
+    @pytest.mark.asyncio
+    async def test_tx_failure_rolls_back_forwarded_counter(self, handler):
+        pkt = _make_flood_packet(payload=b"\x41\x42")
+        handler.airtime_mgr.calculate_airtime = MagicMock(return_value=40.0)
+        handler.airtime_mgr.can_transmit = MagicMock(return_value=(True, 0.0))
+
+        loop = asyncio.get_running_loop()
+        failing = loop.create_future()
+        failing.set_exception(RuntimeError("radio busy"))
+        handler.schedule_retransmit = AsyncMock(return_value=failing)
+
+        with patch.object(handler, "_calculate_tx_delay", return_value=0.0):
+            with pytest.raises(RuntimeError, match="radio busy"):
+                await handler(pkt, {"snr": 0.0, "rssi": -40}, local_transmission=True)
+
+        # Incremented before scheduling, decremented on failure path.
+        assert handler.forwarded_count == 0
+
+    def test_record_packet_only_missing_header_and_storage_failure(self, handler):
+        pkt = _make_flood_packet(payload=b"\x51\x52")
+        n_before = len(handler.recent_packets)
+
+        pkt.header = None
+        handler.record_packet_only(pkt, {"rssi": -70, "snr": 2.0})
+        assert len(handler.recent_packets) == n_before
+
+        pkt.header = ROUTE_TYPE_FLOOD | (0x01 << PH_TYPE_SHIFT)
+        handler.storage.record_packet.side_effect = RuntimeError("db down")
+        handler.record_packet_only(pkt, {"rssi": -70, "snr": 2.0})
+        # Storage failure should not append to recent list.
+        assert len(handler.recent_packets) == n_before
+
+    def test_log_trace_record_updates_counters_even_if_storage_fails(self, handler):
+        base_rx = handler.rx_count
+        base_fwd = handler.forwarded_count
+        base_drop = handler.dropped_count
+        handler.storage.record_packet.side_effect = RuntimeError("write fail")
+
+        handler.log_trace_record({"packet_hash": "ABC123", "transmitted": True})
+        handler.log_trace_record({"packet_hash": "DEF456", "transmitted": False})
+
+        assert handler.rx_count == base_rx + 2
+        assert handler.forwarded_count == base_fwd + 1
+        assert handler.dropped_count == base_drop + 1
+
+    def test_record_duplicate_direct_route_updates_duplicate_counters(self, handler):
+        pkt = _make_direct_packet(payload=b"\x61\x62", path=bytes([LOCAL_HASH, 0xAA]))
+        handler.record_duplicate(pkt, rssi=-88, snr=1.2)
+
+        assert handler.recv_direct_count == 1
+        assert handler.direct_dup_count == 1
+
+    def test_start_background_tasks_only_starts_once(self, handler):
+        marker_task = MagicMock(name="bg_task")
+
+        def _fake_create_task(coro):
+            coro.close()
+            return marker_task
+
+        with patch("repeater.engine.asyncio.create_task", side_effect=_fake_create_task) as mk_task:
+            handler._background_task = None
+            handler._start_background_tasks()
+            handler._start_background_tasks()
+
+        mk_task.assert_called_once()
+        assert handler._background_task is marker_task
+
+    @pytest.mark.asyncio
+    async def test_background_timer_loop_runs_tasks_and_handles_cancel(self, handler):
+        handler.last_noise_measurement = 0
+        handler.noise_floor_interval = 1
+        handler.send_advert_interval_hours = 1
+        handler.send_advert_func = AsyncMock()
+        handler.last_advert_time = 0
+        handler.last_cache_cleanup = 0
+        handler.last_db_cleanup = 0
+        handler.cleanup_cache = MagicMock()
+        handler._record_noise_floor_async = AsyncMock()
+        handler._record_crc_errors_async = AsyncMock()
+        handler._send_periodic_advert_async = AsyncMock()
+
+        with (
+            patch("repeater.engine.time.time", return_value=100000.0),
+            patch("repeater.engine.asyncio.sleep", new_callable=AsyncMock, side_effect=asyncio.CancelledError),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await handler._background_timer_loop()
+
+        handler._record_noise_floor_async.assert_awaited_once()
+        handler._record_crc_errors_async.assert_awaited_once()
+        handler._send_periodic_advert_async.assert_awaited_once()
+        handler.cleanup_cache.assert_called_once()
+        handler.storage.cleanup_old_data.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_background_timer_loop_continues_when_db_cleanup_fails(self, handler):
+        handler.last_noise_measurement = 0
+        handler.noise_floor_interval = 999999
+        handler.send_advert_interval_hours = 0
+        handler.last_cache_cleanup = 0
+        handler.last_db_cleanup = 0
+        handler.cleanup_cache = MagicMock()
+        handler._record_noise_floor_async = AsyncMock()
+        handler._record_crc_errors_async = AsyncMock()
+        handler.storage.cleanup_old_data.side_effect = RuntimeError("cleanup error")
+
+        with (
+            patch("repeater.engine.time.time", return_value=100000.0),
+            patch("repeater.engine.asyncio.sleep", new_callable=AsyncMock, side_effect=asyncio.CancelledError),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await handler._background_timer_loop()
+
+        handler.storage.cleanup_old_data.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_background_timer_loop_exception_restarts_task(self, handler):
+        handler._record_noise_floor_async = AsyncMock(side_effect=RuntimeError("boom"))
+        handler.last_noise_measurement = 0
+        handler.noise_floor_interval = 1
+
+        created = {}
+
+        def _fake_create_task(coro):
+            created["called"] = True
+            # Avoid leaking an un-awaited coroutine in the test process.
+            coro.close()
+            return "restarted-task"
+
+        with (
+            patch("repeater.engine.time.time", return_value=100000.0),
+            patch("repeater.engine.asyncio.sleep", new_callable=AsyncMock, return_value=None) as sleep_mock,
+            patch("repeater.engine.asyncio.create_task", side_effect=_fake_create_task),
+        ):
+            await handler._background_timer_loop()
+
+        sleep_mock.assert_awaited_once_with(30)
+        assert created.get("called") is True
+        assert handler._background_task == "restarted-task"
+
+    @pytest.mark.asyncio
+    async def test_record_noise_floor_handles_none_and_exceptions(self, handler):
+        with patch.object(handler, "get_noise_floor", return_value=None):
+            await handler._record_noise_floor_async()
+        handler.storage.record_noise_floor.assert_not_called()
+
+        with patch.object(handler, "get_noise_floor", side_effect=RuntimeError("noise fail")):
+            await handler._record_noise_floor_async()
+
+    @pytest.mark.asyncio
+    async def test_record_crc_errors_returns_without_storage_and_handles_storage_exception(self, handler):
+        # No storage configured: should return early.
+        handler.storage = None
+        await handler._record_crc_errors_async()
+
+        # Restore storage and force write error on positive delta.
+        handler.storage = MagicMock()
+        handler._last_crc_error_count = 1
+        handler.dispatcher.radio.crc_error_count = 3
+        handler.storage.record_crc_errors.side_effect = RuntimeError("crc write fail")
+
+        await handler._record_crc_errors_async()
+
+    @pytest.mark.asyncio
+    async def test_send_periodic_advert_handles_missing_handler_and_handler_exception(self, handler):
+        handler.send_advert_func = None
+        await handler._send_periodic_advert_async()
+
+        handler.send_advert_func = AsyncMock(side_effect=RuntimeError("advert fail"))
+        await handler._send_periodic_advert_async()
+
+
+class TestEngineRecordAndCleanupHelpers:
+    """Cover helper fallbacks that protect UI visibility and in-memory index integrity."""
+
+    def test_record_duplicate_appends_when_original_not_found(self, handler):
+        # Keep recent non-empty but ensure duplicate hash is not indexed.
+        handler._append_recent_packet({"packet_hash": "OTHERHASH", "transmitted": True})
+        pkt = _make_flood_packet(payload=b"\x71\x72")
+
+        handler.record_duplicate(pkt, rssi=-85, snr=1.0)
+
+        assert handler.recent_packets[-1]["drop_reason"] == "Duplicate"
+        assert handler.recent_packets[-1]["packet_hash"] == pkt.calculate_packet_hash().hex().upper()[:16]
+
+    def test_record_duplicate_appends_when_recent_packets_empty(self, handler):
+        handler.recent_packets.clear()
+        handler._recent_hash_index.clear()
+        pkt = _make_flood_packet(payload=b"\x73\x74")
+
+        handler.record_duplicate(pkt, rssi=-82, snr=1.1)
+
+        assert len(handler.recent_packets) == 1
+        assert handler.recent_packets[0]["drop_reason"] == "Duplicate"
+
+    def test_record_duplicate_route_zero_maps_to_flood_counters(self, handler):
+        pkt = _make_flood_packet(payload=b"\x75\x76")
+        # Route nibble 0 is parsed as FLOOD in current protocol constants.
+        pkt.header = (0x00 << PH_TYPE_SHIFT)
+
+        handler.record_duplicate(pkt, rssi=-90, snr=0.5)
+
+        assert handler.flood_dup_count == 1
+        assert handler.direct_dup_count == 0
+
+    def test_append_recent_packet_eviction_removes_matching_index_entry(self, handler):
+        handler.max_recent_packets = 1
+        old = {"packet_hash": "OLDHASH"}
+        handler.recent_packets.append(old)
+        handler._recent_hash_index["OLDHASH"] = old
+
+        handler._append_recent_packet({"packet_hash": "NEWHASH"})
+
+        assert "OLDHASH" not in handler._recent_hash_index
+        assert handler.recent_packets[-1]["packet_hash"] == "NEWHASH"
+        assert handler._recent_hash_index["NEWHASH"] is handler.recent_packets[-1]
+
+    def test_append_recent_packet_without_hash_skips_index_update(self, handler):
+        base_index = dict(handler._recent_hash_index)
+        handler._append_recent_packet({"timestamp": time.time()})
+        assert dict(handler._recent_hash_index) == base_index
+
+    def test_cleanup_handles_storage_close_exception(self, handler):
+        fake_task = MagicMock()
+        fake_task.done.return_value = False
+        handler._background_task = fake_task
+        handler.storage.close.side_effect = RuntimeError("close failed")
+
+        # cleanup should swallow close errors and not raise.
+        handler.cleanup()
+
+        fake_task.cancel.assert_called_once()

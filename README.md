@@ -258,10 +258,10 @@ pyMC Repeater can run inside a Proxmox LXC container using a **CH341 USB-to-SPI 
 Run this on the **Proxmox host** (not inside a container):
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/rightup/pyMC_Repeater/feat/newRadios/scripts/proxmox-install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/rightup/pyMC_Repeater/dev/scripts/proxmox-install.sh)"
 ```
 
-> **Tip:** Replace `feat/newRadios` in the URL with whichever branch you want to install.
+> **Tip:** Replace `dev` in the URL with whichever branch you want to install.
 
 The installer will interactively prompt you for container settings (hostname, RAM, disk, bridge, etc.) and then:
 

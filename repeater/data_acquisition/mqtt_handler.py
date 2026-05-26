@@ -31,6 +31,16 @@ except ImportError:
 
 logger = logging.getLogger("MQTTHandler")
 
+# Custom ultra-verbose level for high-frequency per-broker publish logs.
+# Keeps default DEBUG useful while allowing deep diagnostics when needed.
+TRACE_LEVEL = 5
+logging.addLevelName(TRACE_LEVEL, "TRACE")
+
+
+def _trace(message: str):
+    if logger.isEnabledFor(TRACE_LEVEL):
+        logger.log(TRACE_LEVEL, message)
+
 
 # --------------------------------------------------------------------
 # Helper: Base64URL without padding
@@ -513,7 +523,7 @@ class _BrokerConnection:
             qos = 1 if self.retain_status else 0
 
         full_topic = f"{self.base_topic}/{subtopic}"
-        logger.debug(
+        _trace(
             f"Publishing topic='{_truncate_middle(full_topic)}', bytes={len(payload.encode('utf-8'))}, "
             f"running={self._running}, retain={retain}, qos={qos}"
         )
@@ -560,7 +570,7 @@ class _BrokerConnection:
         refresh_threshold = 0.80 + stagger_offset
         refresh_delay = expiry_seconds * refresh_threshold
 
-        logger.info(
+        _trace(
             f"JWT refresh scheduled for {self.broker['name']} in {refresh_delay:.0f}s "
             f"({refresh_threshold*100:.0f}% of {self.jwt_expiry_minutes}min token lifetime)"
         )
@@ -960,11 +970,11 @@ class MeshCoreToMqttPusher:
             for conn in self.connections:
                 if conn.enabled and conn.is_connected():
                     if packet_type in conn.disallowed_types:
-                        logger.debug(f"Skipped publishing packet type 0x{packet_type:02X} (disallowed)")
+                        _trace(f"Skipped publishing packet type 0x{packet_type:02X} (disallowed)")
                         continue
                     result = conn.publish(subtopic, message, retain=retain, qos=qos)
                     results.append((conn.broker["name"], result))
-                    logger.debug(f"Published to {conn.broker['name']} -- {subtopic}")
+                    _trace(f"Published to {conn.broker['name']} -- {subtopic}")
                 elif conn.enabled == False:
                     results.append((conn.broker["name"], "Skipped due to being disabled"))
 
@@ -993,7 +1003,7 @@ class MeshCoreToMqttPusher:
                 if conn.enabled and conn.is_connected():
                     if conn.format != "mqtt":
                         # Custom-MQTT-only path; MC2MQTT brokers are intentionally skipped here.
-                        logger.debug(
+                        _trace(
                             f"Skipped publishing to {conn.broker['name']} "
                             f"(intentional: publish_mqtt only targets legacy mqtt format; broker format={conn.format})"
                         )
@@ -1001,7 +1011,7 @@ class MeshCoreToMqttPusher:
                         continue
                     result = conn.publish(subtopic, message, retain=retain, qos=qos)
                     results.append((conn.broker["name"], result))
-                    logger.debug(f"Published to {conn.broker['name']} (format={conn.format}) -- {subtopic}")
+                    _trace(f"Published to {conn.broker['name']} (format={conn.format}) -- {subtopic}")
                 elif conn.enabled == False:
                     results.append((conn.broker["name"], "Skipped due to being disabled"))
 

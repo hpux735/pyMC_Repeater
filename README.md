@@ -367,10 +367,10 @@ sudo bash ./setup-radio-config.sh ./config
    radio, location, and web UI password there, or leave first-run setup to the
    web interface.
 
-4. Configure the [docker compose](./docker-compose.yml) to your specific hardware and file paths. Be sure to comment-out or delete lines that aren't required for your hardware. Please note that your hardware devices might be at a different path than those listed in the docker compose file.
+4. Configure the [docker compose](./docker-compose.yml) to your specific hardware and file paths. Be sure to comment-out or delete lines that aren't required for your hardware. Please note that your hardware devices might be at a different path than those listed in the docker compose file. By default, the compose file pulls the published `pymcdev/pymc-repeater:dev` image. If you need a different image tag or repository, set `PYMC_REPEATER_IMAGE` in a `.env` file.
 
 5. Make the bind mount directories writable by the container user. The image
-   runs as UID/GID `15888` by default unless you override `PUID` and `PGID`.
+   runs as UID/GID `15888` by default.
 
 ```bash
 sudo chown -R 15888:15888 ./config ./data
@@ -378,18 +378,38 @@ sudo chown -R 15888:15888 ./config ./data
 
 6. If you are using SPI/GPIO hardware, make sure the `GPIO_GID` and `SPI_GID`
    values match the numeric group IDs on your host. These IDs can vary by OS
-   image, so check the host before starting the container.
+   image, so check the host before starting the container. If the values do
+   not match your host, put the correct numeric IDs in `.env`.
 
 ```bash
 getent group gpio
 getent group spi
 ```
 
-7. Build and start the container.
+Example output:
+
+```text
+gpio:x:997:
+spi:x:999:
+```
+
+Example `.env`:
 
 ```bash
-docker compose up -d --force-recreate --build
+GPIO_GID=997
+SPI_GID=999
 ```
+
+7. Pull and start the container.
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+If you are developing locally and want Docker Compose to build the image from
+this checkout instead, uncomment the `build:` block in `docker-compose.yml` and
+run `docker compose up -d --build`.
 
 ## Roadmap / Planned Features
 

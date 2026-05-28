@@ -363,7 +363,9 @@ cp ./config.yaml.example ./config/config.yaml
 sudo bash ./setup-radio-config.sh ./config
 ```
 
-3. Modify `./config/config.yaml` with a unique web UI password. This allows you to bypass the `/setup` page when logging for the first time. You can find the value under `repeater.security.admin_password`. Change to _anything_ besides the default of `admin123`.
+3. Review `./config/config.yaml` before first start. You can preconfigure the
+   radio, location, and web UI password there, or leave first-run setup to the
+   web interface.
 
 4. Configure the [docker compose](./docker-compose.yml) to your specific hardware and file paths. Be sure to comment-out or delete lines that aren't required for your hardware. Please note that your hardware devices might be at a different path than those listed in the docker compose file.
 
@@ -375,8 +377,8 @@ sudo chown -R 15888:15888 ./config ./data
 ```
 
 6. If you are using SPI/GPIO hardware, make sure the `GPIO_GID` and `SPI_GID`
-   values match the numeric group IDs on your host. The compose file defaults
-   to `GPIO_GID=986` and `SPI_GID=989`.
+   values match the numeric group IDs on your host. These IDs can vary by OS
+   image, so check the host before starting the container.
 
 ```bash
 getent group gpio

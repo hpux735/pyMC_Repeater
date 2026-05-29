@@ -349,7 +349,13 @@ You can now run pyMC Repeater from within a [Docker Container](https://www.docke
 
 Here is what you'll need to do in order to get the container running:
 
-1. Create the bind mount directories and copy the example config into the
+1. Copy the Docker environment example and adjust it for your host if needed.
+
+```bash
+cp .env.example .env
+```
+
+2. Create the bind mount directories and copy the example config into the
    Docker config directory.
 
 ```bash
@@ -357,26 +363,30 @@ mkdir -p ./config ./data
 cp ./config.yaml.example ./config/config.yaml
 ```
 
-2. Run the configuration script and follow the prompts.
+Do not bind mount `./config.yaml` directly. The supported Docker layout mounts
+the whole `./config` directory to `/etc/pymc_repeater`, with the config file at
+`./config/config.yaml`.
+
+3. Run the configuration script and follow the prompts.
 
 ```bash
 sudo bash ./setup-radio-config.sh ./config
 ```
 
-3. Review `./config/config.yaml` before first start. You can preconfigure the
+4. Review `./config/config.yaml` before first start. You can preconfigure the
    radio, location, and web UI password there, or leave first-run setup to the
    web interface.
 
-4. Configure the [docker compose](./docker-compose.yml) to your specific hardware and file paths. Be sure to comment-out or delete lines that aren't required for your hardware. Please note that your hardware devices might be at a different path than those listed in the docker compose file. By default, the compose file pulls the published `pymcdev/pymc-repeater:dev` image. If you need a different image tag or repository, set `PYMC_REPEATER_IMAGE` in a `.env` file.
+5. Configure the [docker compose](./docker-compose.yml) to your specific hardware and file paths. Be sure to comment-out or delete lines that aren't required for your hardware. Please note that your hardware devices might be at a different path than those listed in the docker compose file. By default, the compose file pulls the published `pymcdev/pymc-repeater:dev` image. If you need a different image tag or repository, set `PYMC_REPEATER_IMAGE` in `.env`.
 
-5. Make the bind mount directories writable by the container user. The image
+6. Make the bind mount directories writable by the container user. The image
    runs as UID/GID `15888` by default.
 
 ```bash
 sudo chown -R 15888:15888 ./config ./data
 ```
 
-6. If you are using SPI/GPIO hardware, make sure the `GPIO_GID` and `SPI_GID`
+7. If you are using SPI/GPIO hardware, make sure the `GPIO_GID` and `SPI_GID`
    values match the numeric group IDs on your host. These IDs can vary by OS
    image, so check the host before starting the container. If the values do
    not match your host, put the correct numeric IDs in `.env`.
@@ -393,14 +403,14 @@ gpio:x:997:
 spi:x:999:
 ```
 
-Example `.env`:
+Example `.env` values:
 
 ```bash
 GPIO_GID=997
 SPI_GID=999
 ```
 
-7. Pull and start the container.
+8. Pull and start the container.
 
 ```bash
 docker compose pull
@@ -408,8 +418,11 @@ docker compose up -d
 ```
 
 If you are developing locally and want Docker Compose to build the image from
-this checkout instead, uncomment the `build:` block in `docker-compose.yml` and
-run `docker compose up -d --build`.
+this checkout instead, use the local build override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
 
 ## Roadmap / Planned Features
 

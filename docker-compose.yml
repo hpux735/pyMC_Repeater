@@ -1,16 +1,6 @@
 services:
   pymc-repeater:
     image: ${PYMC_REPEATER_IMAGE:-pymcdev/pymc-repeater:dev}
-    # Uncomment this block to build from a local checkout instead of pulling
-    # the published Docker image.
-    # build:
-    #   context: .
-    #   dockerfile: dockerfile
-    #   args:
-    #     PUID: ${PUID:-15888}
-    #     PGID: ${PGID:-15888}
-    #     GPIO_GID: ${GPIO_GID:-986}
-    #     SPI_GID: ${SPI_GID:-989}
     container_name: pymc-repeater
     restart: unless-stopped
     ports:
@@ -24,7 +14,7 @@ services:
     # SPI DEVICES PERMISSIONS
     cap_add:
       - SYS_RAWIO
-    # USB DEVICSE PERMISSIONS
+    # USB DEVICE PERMISSIONS
     group_add:
       - "${GPIO_GID:-986}"
       - "${SPI_GID:-989}"

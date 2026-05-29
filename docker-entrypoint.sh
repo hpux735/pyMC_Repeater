@@ -18,6 +18,16 @@ print_permission_help() {
     echo "For the default image user, run: sudo chown -R ${RUNTIME_UID}:${RUNTIME_GID} ./config ./data" >&2
 }
 
+fail_bad_config_mount() {
+    echo "Invalid Docker config mount: ${CONFIG_PATH} is a directory, but it must be the config file." >&2
+    echo "This usually happens when ./config.yaml is bind-mounted before that host file exists." >&2
+    echo "Use the supported folder mount instead:" >&2
+    echo "  - ./config:/etc/pymc_repeater" >&2
+    echo "Then place the config at ./config/config.yaml." >&2
+    print_permission_help
+    exit 1
+}
+
 copy_or_die() {
     src="$1"
     dest="$2"
@@ -93,6 +103,10 @@ merge_config_from_example() {
     cleanup_merge
     trap - EXIT HUP INT TERM
 }
+
+if [ -d "${CONFIG_PATH}" ] && [ "$(basename "${CONFIG_PATH}")" = "config.yaml" ]; then
+    fail_bad_config_mount
+fi
 
 if [ ! -f "${EXAMPLE_PATH}" ] && [ -f "${BUNDLED_EXAMPLE_PATH}" ]; then
     if ! cp "${BUNDLED_EXAMPLE_PATH}" "${EXAMPLE_PATH}"; then

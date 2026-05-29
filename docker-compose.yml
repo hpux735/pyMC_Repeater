@@ -20,5 +20,9 @@ services:
       - "${SPI_GID:-989}"
       - plugdev
     volumes:
-      - ./config:/etc/pymc_repeater
-      - ./data:/var/lib/pymc_repeater
+      - ${PYMC_CONFIG_VOLUME:-pymc-repeater-config}:/etc/pymc_repeater
+      - ${PYMC_DATA_VOLUME:-pymc-repeater-data}:/var/lib/pymc_repeater
+
+volumes:
+  pymc-repeater-config:
+  pymc-repeater-data:

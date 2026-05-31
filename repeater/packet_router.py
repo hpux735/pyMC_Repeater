@@ -172,13 +172,40 @@ class PacketRouter:
             # (avoids duty-cycle or dispatcher races where a later packet goes out first)
             async with self._inject_lock:
                 # Use local_transmission=True to bypass forwarding logic
-                await self.daemon.repeater_handler(packet, metadata, local_transmission=True)
+                sent = await self.daemon.repeater_handler(
+                    packet, metadata, local_transmission=True
+                )
+            if not sent:
+                logger.warning("Injected packet failed local transmission")
+                return False
 
             # Mark so when this packet is dequeued we don't pass to engine again (avoid double-send / double-count)
             packet._injected_for_tx = True
 
             # Enqueue so router can deliver to companion(s): TXT_MSG -> dest bridge, ACK -> all bridges (sender sees ACK)
             await self.enqueue(packet)
+
+            if wait_for_ack:
+                ptype = getattr(packet, "get_payload_type", lambda: None)()
+                if ptype not in {
+                    AckHandler.payload_type(),
+                    AdvertHandler.payload_type(),
+                }:
+                    dispatcher = getattr(self.daemon, "dispatcher", None)
+                    if dispatcher and hasattr(dispatcher, "wait_for_ack"):
+                        try:
+                            expected_crc = packet.get_crc()
+                            ack_ok = await dispatcher.wait_for_ack(
+                                expected_crc, timeout=5.0
+                            )
+                            if not ack_ok:
+                                logger.warning(
+                                    "Injected packet ACK timeout (crc=%08X)", expected_crc
+                                )
+                                return False
+                        except Exception as e:
+                            logger.warning("Injected packet ACK wait failed: %s", e)
+                            return False
 
             packet_len = len(packet.payload) if packet.payload else 0
             logger.debug(
@@ -461,4 +488,11 @@ class PacketRouter:
                 "snr": getattr(packet, "snr", 0.0),
                 "timestamp": getattr(packet, "timestamp", 0),
             }
-            await self.daemon.repeater_handler(packet, metadata)
+            sent = await self.daemon.repeater_handler(packet, metadata)
+            if sent is False:
+                logger.warning(
+                    "Inbound packet not transmitted by repeater handler "
+                    "(type=%s, header=0x%02x)",
+                    payload_type,
+                    getattr(packet, "header", 0),
+                )

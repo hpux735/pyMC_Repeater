@@ -46,7 +46,7 @@ from repeater.packet_router import (
 def _make_daemon():
     """Minimal daemon that satisfies PacketRouter without touching hardware."""
     daemon = MagicMock()
-    daemon.repeater_handler = AsyncMock(return_value=None)
+    daemon.repeater_handler = AsyncMock(return_value=True)
     daemon.trace_helper = None
     daemon.discovery_helper = None
     daemon.advert_helper = None
@@ -200,6 +200,19 @@ class TestInFlightCap(unittest.IsolatedAsyncioTestCase):
             daemon.trace_helper.process_trace_packet.assert_not_awaited()
         finally:
             await router.stop()
+
+    async def test_non_injected_handler_false_is_logged(self):
+        """Inbound packets should log when repeater_handler reports TX failure."""
+        daemon = _make_daemon()
+        daemon.repeater_handler = AsyncMock(return_value=False)
+        router = PacketRouter(daemon)
+        pkt = _make_packet(payload_type=0xFF)
+
+        with patch("repeater.packet_router.logger.warning") as mock_warn:
+            await router._route_packet(pkt)
+
+        daemon.repeater_handler.assert_awaited_once()
+        mock_warn.assert_called()
 
     # ── 3. Shutdown: in-flight tasks drained ────────────────────────────────
 

@@ -1099,7 +1099,7 @@ class RepeaterDaemon:
                 logger.debug("Marked own advert as seen in duplicate cache")
 
             logger.info(
-                "Sent flood advert '%s' at (% .6f, % .6f) source=%s",
+                "Sent flood advert '%s' at (%.6f, %.6f) source=%s",
                 node_name,
                 latitude,
                 longitude,

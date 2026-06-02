@@ -2,11 +2,45 @@ import base64
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, overload
 
 import yaml
 
 logger = logging.getLogger("Config")
+
+
+class NullRadio:
+    """No-op radio used when radio_type disables hardware initialization."""
+
+    def __init__(self):
+        self._rx_callback = None
+
+    def begin(self):
+        return True
+
+    async def send(self, data: bytes):
+        raise RuntimeError("Radio is disabled (radio_type is null/none)")
+
+    async def wait_for_rx(self) -> bytes:
+        import asyncio
+
+        while True:
+            await asyncio.sleep(3600)
+
+    def sleep(self):
+        return None
+
+    def get_last_rssi(self) -> int:
+        return 0
+
+    def get_last_snr(self) -> float:
+        return 0.0
+
+    def set_rx_callback(self, callback):
+        self._rx_callback = callback
+
+    def check_radio_health(self):
+        return True
 
 
 def resolve_storage_dir(
@@ -17,9 +51,7 @@ def resolve_storage_dir(
 ) -> Path:
 
     storage_dir_cfg = (
-        config.get("storage", {}).get("storage_dir")
-        or config.get("storage_dir")
-        or default
+        config.get("storage", {}).get("storage_dir") or config.get("storage_dir") or default
     )
 
     storage_dir = Path(str(storage_dir_cfg)).expanduser()
@@ -36,10 +68,10 @@ def resolve_storage_dir(
 def get_node_info(config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Extract node name, radio configuration, and MQTT settings from config.
-    
+
     Args:
         config: Configuration dictionary
-        
+
     Returns:
         Dictionary with node_name, radio_config, and MQTT configuration
     """
@@ -53,10 +85,10 @@ def get_node_info(config: Dict[str, Any]) -> Dict[str, Any]:
     radio_freq_mhz = radio_freq / 1_000_000
     radio_bw_khz = radio_bw / 1_000
     radio_config_str = f"{radio_freq_mhz},{radio_bw_khz},{radio_sf},{radio_cr}"
-    
+
     # Handle getting the config from mqtt brokers, falling back to letsmesh if it doesn't exist
     mqtt_config = config.get("mqtt_brokers", config.get("letsmesh", {}))
-    
+
     return {
         "node_name": node_name,
         "radio_config": radio_config_str,
@@ -109,7 +141,7 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
             "inform_interval_seconds": 30,
             "request_timeout_seconds": 10,
             "verify_tls": True,
-            "api_token": "",
+            "api_token": None,
             "cert_store_dir": "/etc/pymc_repeater/glass",
         }
 
@@ -150,14 +182,14 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     if "security" not in config["repeater"]:
         logger.warning(
             "No 'security' section found under 'repeater' in config. "
-            "Adding defaults — please review and update passwords."
+            "Adding secure placeholders — complete setup wizard before login."
         )
         config["repeater"]["security"] = {
             "max_clients": 1,
-            "admin_password": "admin123",
-            "guest_password": "guest123",
+            "admin_password": None,
+            "guest_password": None,
             "allow_read_only": False,
-            "jwt_secret": "",
+            "jwt_secret": None,
             "jwt_expiry_minutes": 60,
         }
 
@@ -181,17 +213,17 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
 def save_config(config_data: Dict[str, Any], config_path: Optional[str] = None) -> bool:
     """
     Save configuration to YAML file.
-    
+
     Args:
         config_data: Configuration dictionary to save
         config_path: Path to config file (uses default if None)
-        
+
     Returns:
         True if successful, False otherwise
     """
     if config_path is None:
         config_path = os.getenv("PYMC_REPEATER_CONFIG", "/etc/pymc_repeater/config.yaml")
-    
+
     try:
         # Create backup of existing config
         config_file = Path(config_path)
@@ -213,7 +245,7 @@ def save_config(config_data: Dict[str, Any], config_path: Optional[str] = None) 
 
         logger.info(f"Saved configuration to {config_path}")
         return True
-        
+
     except Exception as e:
         logger.error(f"Failed to save configuration: {e}")
         return False
@@ -222,29 +254,29 @@ def save_config(config_data: Dict[str, Any], config_path: Optional[str] = None) 
 def update_unscoped_flood_policy(allow: bool, config_path: Optional[str] = None) -> bool:
     """
     Update the unscoped flood policy in the configuration.
-    
+
     Args:
         allow: True to allow unscoped flooding, False to deny
         config_path: Path to config file (uses default if None)
-        
+
     Returns:
         True if successful, False otherwise
     """
     try:
         # Load current config
         config = load_config(config_path)
-        
+
         # Ensure mesh section exists
         if "mesh" not in config:
             config["mesh"] = {}
-        
+
         # Set global flood policy
         config["mesh"]["global_flood_allow"] = allow
         config["mesh"]["unscoped_flood_allow"] = allow
-        
+
         # Save updated config
         return save_config(config, config_path)
-        
+
     except Exception as e:
         logger.error(f"Failed to update unscoped flood policy: {e}")
         return False
@@ -299,13 +331,19 @@ def _load_or_create_identity_key(path: Optional[str] = None) -> bytes:
 
 def get_radio_for_board(board_config: dict):
 
-    def _parse_int(value, *, default=None) -> int:
+    @overload
+    def _parse_int(value, *, default: None = None) -> Optional[int]: ...
+
+    @overload
+    def _parse_int(value, *, default: int) -> int: ...
+
+    def _parse_int(value, *, default=None):
         if value is None:
             return default
         if isinstance(value, int):
             return value
         if isinstance(value, str):
-            return int(value.strip().rstrip(','), 0)
+            return int(value.strip().rstrip(","), 0)
         raise ValueError(f"Invalid int value type: {type(value)}")
 
     def _parse_int_list(value):
@@ -322,7 +360,16 @@ def get_radio_for_board(board_config: dict):
             return [_parse_int(item) for item in stripped.split(",") if item.strip()]
         raise ValueError(f"Invalid int list value type: {type(value)}")
 
-    radio_type = board_config.get("radio_type", "sx1262").lower().strip()
+    radio_type_raw = board_config.get("radio_type")
+    if radio_type_raw is None:
+        radio_type = "none"
+    else:
+        radio_type = str(radio_type_raw).lower().strip()
+
+    if radio_type in ("", "none", "null", "disabled", "off", "no_radio"):
+        logger.warning("Radio disabled by configuration (radio_type=%r)", radio_type_raw)
+        return NullRadio()
+
     if radio_type == "kiss-modem":
         radio_type = "kiss"
 
@@ -468,9 +515,7 @@ def get_radio_for_board(board_config: dict):
 
         host = tcp_cfg.get("host")
         if not host:
-            raise ValueError(
-                "Missing 'host' in 'pymc_tcp' section (modem hostname or LAN IP)"
-            )
+            raise ValueError("Missing 'host' in 'pymc_tcp' section (modem hostname or LAN IP)")
 
         radio_cfg = board_config.get("radio") or {}
         radio = TCPLoRaRadio(
@@ -483,7 +528,7 @@ def get_radio_for_board(board_config: dict):
             spreading_factor=int(radio_cfg.get("spreading_factor", 8)),
             coding_rate=int(radio_cfg.get("coding_rate", 8)),
             tx_power=int(radio_cfg.get("tx_power", 22)),
-            sync_word=_parse_int(radio_cfg.get("sync_word", 0x12)),
+            sync_word=_parse_int(radio_cfg.get("sync_word", 0x12), default=0x12),
             preamble_length=int(radio_cfg.get("preamble_length", 16)),
             lbt_enabled=bool(tcp_cfg.get("lbt_enabled", True)),
             lbt_max_attempts=int(tcp_cfg.get("lbt_max_attempts", 5)),
@@ -514,9 +559,7 @@ def get_radio_for_board(board_config: dict):
 
         port = usb_cfg.get("port")
         if not port:
-            raise ValueError(
-                "Missing 'port' in 'pymc_usb' section (e.g. /dev/ttyACM0)"
-            )
+            raise ValueError("Missing 'port' in 'pymc_usb' section (e.g. /dev/ttyACM0)")
 
         radio_cfg = board_config.get("radio") or {}
         radio = USBLoRaRadio(
@@ -527,7 +570,7 @@ def get_radio_for_board(board_config: dict):
             spreading_factor=int(radio_cfg.get("spreading_factor", 8)),
             coding_rate=int(radio_cfg.get("coding_rate", 8)),
             tx_power=int(radio_cfg.get("tx_power", 22)),
-            sync_word=_parse_int(radio_cfg.get("sync_word", 0x12)),
+            sync_word=_parse_int(radio_cfg.get("sync_word", 0x12), default=0x12),
             preamble_length=int(radio_cfg.get("preamble_length", 16)),
             lbt_enabled=bool(usb_cfg.get("lbt_enabled", True)),
             lbt_max_attempts=int(usb_cfg.get("lbt_max_attempts", 5)),

@@ -503,10 +503,19 @@ if [ -n "$ARCH_TAG" ]; then
     "$VENV_PIP" install --find-links "${WHEEL_BASE}/index.html" --no-cache-dir "pycryptodome>=3.23.0" "PyNaCl>=1.5.0" cffi "pyyaml>=6.0.0" 2>/dev/null || true
 fi
 # ---- Install pymc_repeater from git ----
-exec "$VENV_PIP" install \
+if "$VENV_PIP" install \
     --upgrade \
     --no-cache-dir \
-    "pymc_repeater[hardware] @ git+https://github.com/rightup/pyMC_Repeater.git@${CHANNEL}"
+    "pymc_repeater[hardware] @ git+https://github.com/rightup/pyMC_Repeater.git@${CHANNEL}"; then
+    # Keep web/OTA updates aligned with manage.sh install/upgrade defaults.
+    RADIO_BASE_URL="https://raw.githubusercontent.com/rightup/pyMC_Repeater/${CHANNEL}"
+    RADIO_STORAGE_DIR="/var/lib/pymc_repeater"
+    mkdir -p "$RADIO_STORAGE_DIR"
+    wget -qO "$RADIO_STORAGE_DIR/radio-settings.json" "${RADIO_BASE_URL}/radio-settings.json" 2>/dev/null || true
+    wget -qO "$RADIO_STORAGE_DIR/radio-presets.json" "${RADIO_BASE_URL}/radio-presets.json" 2>/dev/null || true
+else
+    exit 1
+fi
 UPGRADEEOF
     chmod 0755 /usr/local/bin/pymc-do-upgrade
 
@@ -907,10 +916,19 @@ python3 -m pip uninstall -y pymc_core 2>/dev/null || true
             "$VENV_PIP" install --find-links "${WHEEL_BASE}/index.html" --no-cache-dir "pycryptodome>=3.23.0" "PyNaCl>=1.5.0" cffi "pyyaml>=6.0.0" 2>/dev/null || true
         fi
         # ---- Install pymc_repeater from git ----
-        exec "$VENV_PIP" install \
+        if "$VENV_PIP" install \
             --upgrade \
             --no-cache-dir \
-            "pymc_repeater[hardware] @ git+https://github.com/rightup/pyMC_Repeater.git@${CHANNEL}"
+            "pymc_repeater[hardware] @ git+https://github.com/rightup/pyMC_Repeater.git@${CHANNEL}"; then
+            # Keep web/OTA updates aligned with manage.sh install/upgrade defaults.
+            RADIO_BASE_URL="https://raw.githubusercontent.com/rightup/pyMC_Repeater/${CHANNEL}"
+            RADIO_STORAGE_DIR="/var/lib/pymc_repeater"
+            mkdir -p "$RADIO_STORAGE_DIR"
+            wget -qO "$RADIO_STORAGE_DIR/radio-settings.json" "${RADIO_BASE_URL}/radio-settings.json" 2>/dev/null || true
+            wget -qO "$RADIO_STORAGE_DIR/radio-presets.json" "${RADIO_BASE_URL}/radio-presets.json" 2>/dev/null || true
+        else
+            exit 1
+        fi
 UPGRADEEOF
         chmod 0755 /usr/local/bin/pymc-do-upgrade
         echo "    ✓ Permissions updated"

@@ -5,7 +5,9 @@ import time
 from pathlib import Path
 import pytest
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "repeater" / "data_acquisition" / "glass_handler.py"
+_MODULE_PATH = (
+    Path(__file__).resolve().parents[1] / "repeater" / "data_acquisition" / "glass_handler.py"
+)
 _SPEC = importlib.util.spec_from_file_location("repeater_glass_handler", _MODULE_PATH)
 _MODULE = importlib.util.module_from_spec(_SPEC)
 assert _SPEC and _SPEC.loader
@@ -197,10 +199,10 @@ def test_build_inform_payload_contains_expected_fields():
     assert payload["node_name"] == "mesh-repeater-01"
     assert payload["pubkey"].startswith("0x")
     assert payload["config_hash"].startswith("sha256:")
-    assert payload["location"] == "51.907400,-0.157800"
+    assert payload["location"] == "51.507400,-0.127800"
     assert payload["radio"]["frequency"] == 869618000
     assert payload["counters"]["duplicates"] == 4
-    assert payload["settings"]["repeater"]["location"] == "51.9074,-0.1570"
+    assert payload["settings"]["repeater"]["location"] == "51.5074,-0.1278"
     assert payload["settings"]["repeater"]["identity_key"] == "<redacted>"
     assert payload["settings"]["glass"]["mqtt_password"] == "<redacted>"
     assert payload["command_results"][0]["command_id"] == "cmd-1"
@@ -212,9 +214,12 @@ def test_execute_set_mode_command_updates_config():
     manager = _DummyConfigManager()
     handler = GlassHandler(config=config, daemon_instance=daemon, config_manager=manager)
 
-    ok, message = asyncio.run(handler._execute_command_action("set_mode", {"mode": "monitor"}))
+    ok, message, details = asyncio.run(
+        handler._execute_command_action("set_mode", {"mode": "monitor"})
+    )
     assert ok is True
     assert "Config patched" in message
+    assert details is None
     assert manager.calls
     assert manager.calls[-1]["updates"]["repeater"]["mode"] == "monitor"
 

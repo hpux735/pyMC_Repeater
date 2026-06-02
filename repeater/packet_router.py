@@ -25,6 +25,27 @@ logger = logging.getLogger("PacketRouter")
 # so the client is not spammed with duplicate telemetry when the mesh delivers multiple copies.
 _COMPANION_DEDUPE_TTL_SEC = 60.0
 
+# Drop reasons that are normal policy outcomes and should not be warning-level.
+# TODO: create Enum in engine for drop reasons and use it here and in engine instead of string matching.
+_EXPECTED_DROP_REASON_PREFIXES = (
+    "Duplicate",
+    "Max flood hops limit reached",
+    "Path hop count at maximum",
+    "Path would exceed MAX_PATH_SIZE",
+    "Direct: no path",
+    "Direct: not for us",
+    "Unscoped flood policy disabled",
+    "Transport code not allowed to flood",
+    "FLOOD loop detected",
+    "Marked do not retransmit",
+    "Repeat disabled",
+    "No TX mode",
+    "Duty cycle limit",
+    "Empty payload",
+    "Path too long",
+    "Invalid advert packet",
+)
+
 
 def _companion_dedup_key(packet) -> str | None:
     """Return a stable key for companion delivery deduplication, or None if not available."""
@@ -43,8 +64,33 @@ def _is_direct_final_hop(packet) -> bool:
     return not path or len(path) == 0
 
 
-class PacketRouter:
+def _is_expected_drop_reason(reason: str | None) -> bool:
+    if not isinstance(reason, str) or not reason:
+        return False
+    return any(reason.startswith(prefix) for prefix in _EXPECTED_DROP_REASON_PREFIXES)
 
+
+def _drop_reason_from_recent_packets(handler, packet) -> str | None:
+    """Best-effort drop reason lookup from handler recent packet records."""
+    recent_packets = getattr(handler, "recent_packets", None)
+    if not recent_packets:
+        return None
+    try:
+        packet_hash = packet.calculate_packet_hash().hex().upper()[:16]
+    except Exception:
+        return None
+    for record in reversed(list(recent_packets)):
+        if not isinstance(record, dict):
+            continue
+        if record.get("packet_hash") != packet_hash:
+            continue
+        reason = record.get("drop_reason")
+        if isinstance(reason, str) and reason:
+            return reason
+    return None
+
+
+class PacketRouter:
     def __init__(self, daemon_instance):
         self.daemon = daemon_instance
         self.queue = asyncio.Queue(maxsize=500)
@@ -75,7 +121,7 @@ class PacketRouter:
         self.running = True
         self.router_task = asyncio.create_task(self._process_queue())
         logger.info("Packet router started")
-    
+
     async def stop(self):
         self.running = False
         if self.router_task:
@@ -121,7 +167,7 @@ class PacketRouter:
             exc = task.exception()
             if exc is not None:
                 logger.error("_route_packet raised: %s", exc, exc_info=exc)
-    
+
     def _should_deliver_path_to_companions(self, packet) -> bool:
         """Return True if this PATH/protocol-response should be delivered to companions (first of duplicates)."""
         key = _companion_dedup_key(packet)
@@ -161,7 +207,7 @@ class PacketRouter:
                 pass
         await self.queue.put(packet)
 
-    async def inject_packet(self, packet, wait_for_ack: bool = False):
+    async def inject_packet(self, packet, wait_for_ack: bool = False, origin_hash=None):
         try:
             metadata = {
                 "rssi": getattr(packet, "rssi", 0),
@@ -173,15 +219,60 @@ class PacketRouter:
             # (avoids duty-cycle or dispatcher races where a later packet goes out first)
             async with self._inject_lock:
                 # Use local_transmission=True to bypass forwarding logic
-                await self.daemon.repeater_handler(
-                    packet, metadata, local_transmission=True
-                )
+                sent = await self.daemon.repeater_handler(packet, metadata, local_transmission=True)
+            if not sent:
+                logger.warning("Injected packet failed local transmission")
+                return False
 
             # Mark so when this packet is dequeued we don't pass to engine again (avoid double-send / double-count)
             packet._injected_for_tx = True
 
+            # Echo this local TX to companion frame server clients as raw RX
+            # (PUSH_CODE_LOG_RX_DATA 0x88, snr=0/rssi=0 = local origin) so apps that
+            # decrypt locally from raw RX (e.g. RemoteTerm) see companion-originated
+            # traffic, matching what other mesh nodes would hear off the air. The
+            # originating companion (origin_hash) is excluded so it never hears its own TX.
+            push_rx = getattr(self.daemon, "_on_raw_rx_for_companions", None)
+            if push_rx is not None:
+                try:
+                    raw = packet.write_to()
+                    await push_rx(raw, 0, 0.0, exclude_hash=origin_hash)
+                    servers = getattr(self.daemon, "companion_frame_servers", [])
+                    pushed = sum(
+                        1 for fs in servers if getattr(fs, "companion_hash", None) != origin_hash
+                    )
+                    logger.debug(
+                        "Echoed injected TX as raw RX (0x88) to %d companion client(s) "
+                        "(%d bytes, origin=%s excluded)",
+                        pushed,
+                        len(raw),
+                        origin_hash,
+                    )
+                except Exception as e:
+                    logger.debug("Failed to echo injected TX to companions: %s", e)
+
             # Enqueue so router can deliver to companion(s): TXT_MSG -> dest bridge, ACK -> all bridges (sender sees ACK)
             await self.enqueue(packet)
+
+            if wait_for_ack:
+                ptype = getattr(packet, "get_payload_type", lambda: None)()
+                if ptype not in {
+                    AckHandler.payload_type(),
+                    AdvertHandler.payload_type(),
+                }:
+                    dispatcher = getattr(self.daemon, "dispatcher", None)
+                    if dispatcher and hasattr(dispatcher, "wait_for_ack"):
+                        try:
+                            expected_crc = packet.get_crc()
+                            ack_ok = await dispatcher.wait_for_ack(expected_crc, timeout=5.0)
+                            if not ack_ok:
+                                logger.warning(
+                                    "Injected packet ACK timeout (crc=%08X)", expected_crc
+                                )
+                                return False
+                        except Exception as e:
+                            logger.warning("Injected packet ACK wait failed: %s", e)
+                            return False
 
             packet_len = len(packet.payload) if packet.payload else 0
             logger.debug(
@@ -189,7 +280,11 @@ class PacketRouter:
             )
             # Log protocol REQ (e.g. status/telemetry) so we can confirm target node
             ptype = getattr(packet, "get_payload_type", lambda: None)()
-            if ptype == ProtocolRequestHandler.payload_type() and packet.payload and packet_len >= 1:
+            if (
+                ptype == ProtocolRequestHandler.payload_type()
+                and packet.payload
+                and packet_len >= 1
+            ):
                 logger.info(
                     "Injected protocol REQ: dest=0x%02x, payload=%d bytes",
                     packet.payload[0],
@@ -200,7 +295,7 @@ class PacketRouter:
         except Exception as e:
             logger.error(f"Error injecting packet through engine: {e}")
             return False
-    
+
     async def _process_queue(self):
         while self.running:
             try:
@@ -213,7 +308,9 @@ class PacketRouter:
                     logger.warning(
                         "In-flight task cap reached (%d/%d), dropping packet "
                         "(session total dropped: %d)",
-                        self._in_flight, self._max_in_flight, self._cap_drop_count,
+                        self._in_flight,
+                        self._max_in_flight,
+                        self._cap_drop_count,
                     )
                     continue
                 self._in_flight += 1
@@ -458,4 +555,26 @@ class PacketRouter:
                 "snr": getattr(packet, "snr", 0.0),
                 "timestamp": getattr(packet, "timestamp", 0),
             }
-            await self.daemon.repeater_handler(packet, metadata)
+            sent = await self.daemon.repeater_handler(packet, metadata)
+            if sent is False:
+                drop_reason = getattr(packet, "_repeater_drop_reason", None)
+                if not isinstance(drop_reason, str):
+                    drop_reason = _drop_reason_from_recent_packets(
+                        self.daemon.repeater_handler, packet
+                    )
+                if _is_expected_drop_reason(drop_reason):
+                    logger.debug(
+                        "Inbound packet intentionally not transmitted by repeater handler "
+                        "(type=%s, header=0x%02x, reason=%s)",
+                        payload_type,
+                        getattr(packet, "header", 0),
+                        drop_reason,
+                    )
+                else:
+                    logger.warning(
+                        "Inbound packet not transmitted by repeater handler "
+                        "(type=%s, header=0x%02x, reason=%s)",
+                        payload_type,
+                        getattr(packet, "header", 0),
+                        drop_reason or "unknown",
+                    )

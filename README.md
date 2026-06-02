@@ -258,10 +258,10 @@ pyMC Repeater can run inside a Proxmox LXC container using a **CH341 USB-to-SPI 
 Run this on the **Proxmox host** (not inside a container):
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/rightup/pyMC_Repeater/feat/newRadios/scripts/proxmox-install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/rightup/pyMC_Repeater/dev/scripts/proxmox-install.sh)"
 ```
 
-> **Tip:** Replace `feat/newRadios` in the URL with whichever branch you want to install.
+> **Tip:** Replace `dev` in the URL with whichever branch you want to install.
 
 The installer will interactively prompt you for container settings (hostname, RAM, disk, bridge, etc.) and then:
 
@@ -399,7 +399,7 @@ I welcome contributions! To contribute to pyMC_repeater:
 ### Development Setup
 
 ```bash
-# Install in development mode with dev tools (black, pytest, isort, mypy, etc)
+# Install in development mode with dev tools (ruff, pytest, mypy, etc)
 pip install -e ".[dev]"
 
 # Setup pre-commit hooks for code quality
@@ -413,9 +413,8 @@ pre-commit run --all-files
 **Note:** Hardware support (LoRa radio drivers) is included in the base installation automatically via `pymc_core[hardware]`.
 
 Pre-commit hooks will automatically:
-- Format code with Black
-- Sort imports with isort
-- Lint with flake8
+- Lint and auto-fix Python issues with Ruff
+- Validate formatting with Ruff formatter
 - Fix trailing whitespace and other file issues
 
 ## Support

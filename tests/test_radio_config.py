@@ -54,6 +54,16 @@ def test_get_radio_for_board_passes_en_pins(monkeypatch):
     assert "en_pin" not in captured_kwargs
 
 
+def test_get_radio_for_board_null_radio_type_returns_null_radio():
+    radio = get_radio_for_board({"radio_type": None})
+    assert type(radio).__name__ == "NullRadio"
+
+
+def test_get_radio_for_board_missing_radio_type_returns_null_radio():
+    radio = get_radio_for_board({})
+    assert type(radio).__name__ == "NullRadio"
+
+
 # ─── pymc_tcp / pymc_usb branches ────────────────────────────────────
 
 

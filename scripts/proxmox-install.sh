@@ -12,7 +12,7 @@ set -euo pipefail
 
 # ── Defaults ───────────────────────────────────────────────────────────────
 REPO="https://github.com/rightup/pyMC_Repeater.git"
-BRANCH="feat/newRadios"
+BRANCH="dev"
 CT_TEMPLATE="debian-12-standard"
 CT_RAM=1024
 CT_SWAP=512

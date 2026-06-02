@@ -3,20 +3,20 @@ import functools
 import logging
 import os
 import signal
-import sys
 import socket
+import sys
 import time
 
 from repeater.companion.utils import (
     CompanionContactCapacityError,
     check_companion_contact_capacity,
+    effective_max_contacts,
     format_companion_bridge_limits,
     normalize_companion_identity_key,
     parse_companion_bridge_kwargs,
-    effective_max_contacts,
     validate_companion_node_name,
 )
-from repeater.config import get_radio_for_board, load_config, save_config
+from repeater.config import NullRadio, get_radio_for_board, load_config, save_config
 from repeater.config_manager import ConfigManager
 from repeater.data_acquisition.glass_handler import GlassHandler
 from repeater.data_acquisition.gps_service import GPSService
@@ -39,7 +39,6 @@ logger = logging.getLogger("RepeaterDaemon")
 
 
 class RepeaterDaemon:
-
     def __init__(self, config: dict, radio=None):
 
         self.config = config
@@ -67,6 +66,8 @@ class RepeaterDaemon:
         self.companion_frame_servers: list = []
         self._shutdown_started = False
         self._main_task = None
+        self.radio_status = "unknown"
+        self.radio_error = None
 
         log_level = config.get("logging", {}).get("level", "INFO")
         logging.basicConfig(
@@ -82,14 +83,14 @@ class RepeaterDaemon:
 
         logger.info(f"Initializing repeater: {self.config['repeater']['node_name']}")
 
-        #-----------------------------------------------
-        # Get the actual Network IP Address 
+        # -----------------------------------------------
+        # Get the actual Network IP Address
         try:
             # This looks for the IP assigned to the default hostname
             host_name = socket.gethostname()
             # We try to get the IP associated with the hostname
             self.network_ip = socket.gethostbyname(host_name)
-            
+
             # If that still gives 127.0.x.x, let's try a different internal method
             if self.network_ip.startswith("127."):
                 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -102,13 +103,36 @@ class RepeaterDaemon:
             self.network_ip = "Unknown"
 
         logger.info(f"System Network IP: {self.network_ip}")
-        #-----------------------------------------------
+        # -----------------------------------------------
 
         if self.radio is None:
-            radio_type = self.config.get("radio_type", "sx1262")
+            radio_type_raw = self.config.get("radio_type")
+            radio_type = "none" if radio_type_raw is None else str(radio_type_raw)
+            radio_type_lower = radio_type.lower().strip()
+            radio_explicitly_disabled = radio_type_lower in (
+                "",
+                "none",
+                "null",
+                "disabled",
+                "off",
+                "no_radio",
+            )
             logger.info(f"Initializing radio hardware... (radio_type={radio_type})")
             try:
                 self.radio = get_radio_for_board(self.config)
+
+                if isinstance(self.radio, NullRadio):
+                    self.radio_status = "disabled" if radio_explicitly_disabled else "degraded"
+                    if self.radio_status == "disabled":
+                        self.radio_error = None
+                    else:
+                        self.radio_error = (
+                            self.radio_error
+                            or f"Radio type '{radio_type}' unavailable; running in no-radio mode"
+                        )
+                else:
+                    self.radio_status = "ok"
+                    self.radio_error = None
 
                 # KISS modem: schedule RX callbacks on the event loop for thread safety
                 if hasattr(self.radio, "set_event_loop"):
@@ -141,7 +165,14 @@ class RepeaterDaemon:
                 logger.info("Radio hardware initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize radio hardware: {e}")
-                raise RuntimeError("Repeater requires real LoRa hardware") from e
+                self.radio_status = "degraded"
+                self.radio_error = str(e)
+                logger.warning(
+                    "Radio type '%s' unavailable; starting in no-radio mode to keep service alive. "
+                    "Check radio configuration and hardware mapping.",
+                    radio_type,
+                )
+                self.radio = NullRadio()
 
         try:
             from pymc_core import LocalIdentity
@@ -178,7 +209,9 @@ class RepeaterDaemon:
             self.dispatcher._is_own_packet = lambda pkt: False
 
             self.repeater_handler = RepeaterHandler(
-                self.config, self.dispatcher, self.local_hash,
+                self.config,
+                self.dispatcher,
+                self.local_hash,
                 local_hash_bytes=self.local_hash_bytes,
                 send_advert_func=self.send_advert,
             )
@@ -243,6 +276,12 @@ class RepeaterDaemon:
                 identity_manager=self.identity_manager,
                 packet_injector=self.router.inject_packet,
                 log_fn=logger.info,
+                sqlite_handler=(
+                    self.repeater_handler.storage.sqlite_handler
+                    if self.repeater_handler and self.repeater_handler.storage
+                    else None
+                ),  # For anon regions-discovery replies
+                config=self.config,  # For owner-info / feature-flags replies
             )
 
             # Register default repeater identity
@@ -383,7 +422,9 @@ class RepeaterDaemon:
                 and self.repeater_handler.storage
                 and hasattr(self.repeater_handler.storage, "set_glass_publisher")
             ):
-                self.repeater_handler.storage.set_glass_publisher(self.glass_handler.publish_telemetry)
+                self.repeater_handler.storage.set_glass_publisher(
+                    self.glass_handler.publish_telemetry
+                )
 
         except Exception as e:
             logger.error(f"Failed to initialize dispatcher: {e}")
@@ -402,7 +443,7 @@ class RepeaterDaemon:
                 identity_key = room_config.get("identity_key")
 
                 if not name or not identity_key:
-                    logger.warning(f"Skipping room server config: missing name or identity_key")
+                    logger.warning("Skipping room server config: missing name or identity_key")
                     continue
 
                 # Convert identity_key to bytes if it's a hex string
@@ -411,9 +452,9 @@ class RepeaterDaemon:
                 elif isinstance(identity_key, str):
                     try:
                         identity_key_bytes = bytes.fromhex(identity_key)
-                        if len(identity_key_bytes) != 32:
+                        if len(identity_key_bytes) not in (32, 64):
                             logger.error(
-                                f"Identity key for '{name}' is invalid length: {len(identity_key_bytes)} bytes (expected 32)"
+                                f"Identity key for '{name}' is invalid length: {len(identity_key_bytes)} bytes (expected 32 or 64)"
                             )
                             continue
                     except ValueError as e:
@@ -453,7 +494,7 @@ class RepeaterDaemon:
     async def _load_companion_identities(self) -> None:
         """Load companion identities from config and create CompanionBridge + frame server for each."""
         from pymc_core import LocalIdentity
-        from pymc_core.companion.models import Channel, Contact
+        from pymc_core.companion.models import Channel
 
         from repeater.companion import CompanionFrameServer, RepeaterCompanionBridge
 
@@ -487,7 +528,9 @@ class RepeaterDaemon:
 
                 if isinstance(identity_key, str):
                     try:
-                        identity_key_bytes = bytes.fromhex(normalize_companion_identity_key(identity_key))
+                        identity_key_bytes = bytes.fromhex(
+                            normalize_companion_identity_key(identity_key)
+                        )
                     except ValueError as e:
                         logger.error(f"Companion '{name}' identity_key invalid hex: {e}")
                         continue
@@ -510,12 +553,13 @@ class RepeaterDaemon:
 
                 node_name = settings.get("node_name", name)
                 tcp_port = settings.get("tcp_port", 5000)
-                bind_address = settings.get("bind_address", "0.0.0.0")
-                tcp_timeout_raw = settings.get("tcp_timeout", 8 * 60 * 60) # 8 hours
+                bind_address = settings.get("bind_address", "0.0.0.0")  # nosec B104
+                tcp_timeout_raw = settings.get("tcp_timeout", 8 * 60 * 60)  # 8 hours
                 client_idle_timeout_sec = None if tcp_timeout_raw == 0 else int(tcp_timeout_raw)
 
                 def _make_sync_node_name_to_config(companion_name: str):
                     """Return a callback that syncs node_name to config for this companion (binds name at creation)."""
+
                     def _sync(new_node_name: str) -> None:
                         try:
                             validated = validate_companion_node_name(new_node_name)
@@ -531,6 +575,7 @@ class RepeaterDaemon:
                                 if config_path:
                                     save_config(self.config, config_path)
                                 break
+
                     return _sync
 
                 bridge_kwargs = parse_companion_bridge_kwargs(settings)
@@ -545,7 +590,12 @@ class RepeaterDaemon:
 
                 bridge = RepeaterCompanionBridge(
                     identity=identity,
-                    packet_injector=self.router.inject_packet,
+                    # Tag the injector with this companion's hash so inject_packet can
+                    # skip its own frame server when echoing TX as raw RX (a node never
+                    # hears its own transmission).
+                    packet_injector=functools.partial(
+                        self.router.inject_packet, origin_hash=companion_hash_str
+                    ),
                     node_name=node_name,
                     radio_config=radio_config,
                     sqlite_handler=sqlite_handler,
@@ -705,7 +755,7 @@ class RepeaterDaemon:
 
         node_name = settings.get("node_name", name)
         tcp_port = settings.get("tcp_port", 5000)
-        bind_address = settings.get("bind_address", "0.0.0.0")
+        bind_address = settings.get("bind_address", "0.0.0.0")  # nosec B104
         tcp_timeout_raw = settings.get("tcp_timeout", 120)
         client_idle_timeout_sec = None if tcp_timeout_raw == 0 else int(tcp_timeout_raw)
 
@@ -810,12 +860,21 @@ class RepeaterDaemon:
             f"client_idle_timeout_sec={client_idle_timeout_sec}{limits}"
         )
 
-    async def _on_raw_rx_for_companions(self, data: bytes, rssi: int, snr: float) -> None:
-        """Raw RX subscriber: push PUSH_CODE_LOG_RX_DATA (0x88) to connected companion clients."""
+    async def _on_raw_rx_for_companions(
+        self, data: bytes, rssi: int, snr: float, exclude_hash: str | None = None
+    ) -> None:
+        """Raw RX subscriber: push PUSH_CODE_LOG_RX_DATA (0x88) to connected companion clients.
+
+        ``exclude_hash`` skips the frame server for that companion hash; used when
+        echoing a companion's own injected TX so it never hears its own transmission.
+        OTA RX subscribers leave it unset, so received packets reach every companion.
+        """
         servers = getattr(self, "companion_frame_servers", [])
         if not servers:
             return
         for fs in servers:
+            if exclude_hash is not None and getattr(fs, "companion_hash", None) == exclude_hash:
+                continue
             try:
                 fs.push_rx_raw(snr, rssi, data)
             except Exception as e:
@@ -980,6 +1039,10 @@ class RepeaterDaemon:
         if self.sensor_manager:
             stats["sensors"] = self.sensor_manager.get_summary()
 
+        stats["radio_status"] = self.radio_status
+        if self.radio_error:
+            stats["radio_error"] = self.radio_error
+
         return stats
 
     async def _get_companion_stats(self, stats_type: int) -> dict:
@@ -1079,13 +1142,14 @@ class RepeaterDaemon:
             # Send via dispatcher
             await self.dispatcher.send_packet(packet, wait_for_ack=False)
 
-            # Mark our own advert as seen to prevent re-forwarding it
             if self.repeater_handler:
                 self.repeater_handler.mark_seen(packet)
+                pkt_hash = packet.calculate_packet_hash().hex()[:16]
+                self.dispatcher.packet_filter.track_packet(pkt_hash)
                 logger.debug("Marked own advert as seen in duplicate cache")
 
             logger.info(
-                "Sent flood advert '%s' at (% .6f, % .6f) source=%s",
+                "Sent flood advert '%s' at (%.6f, %.6f) source=%s",
                 node_name,
                 latitude,
                 longitude,
@@ -1236,7 +1300,9 @@ class RepeaterDaemon:
 
         # Release CH341 USB device if in use
         try:
-            if self.config.get("radio_type", "sx1262").lower() == "sx1262_ch341":
+            radio_type_raw = self.config.get("radio_type")
+            radio_type = "" if radio_type_raw is None else str(radio_type_raw).lower()
+            if radio_type == "sx1262_ch341":
                 from pymc_core.hardware.ch341.ch341_async import CH341Async
 
                 CH341Async.reset_instance()
@@ -1281,7 +1347,7 @@ class RepeaterDaemon:
 
             # Start HTTP stats server
             http_port = self.config.get("http", {}).get("port", 8000)
-            http_host = self.config.get("http", {}).get("host", "0.0.0.0")
+            http_host = self.config.get("http", {}).get("host", "0.0.0.0")  # nosec B104
 
             node_name = self.config.get("repeater", {}).get("node_name", "Repeater")
 

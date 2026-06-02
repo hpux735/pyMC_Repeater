@@ -1,7 +1,3 @@
-# Default Repeater Configuration
-# radio_type: sx1262 | kiss (use kiss for serial KISS TNC modem)
-radio_type: sx1262
-
 repeater:
   # Node name for logging and identification
   node_name: "mesh-repeater-01"
@@ -247,6 +243,36 @@ sensors:
     #     bus_number: 1         # I2C bus number (1 for Raspberry Pi default)
     #     read_timeout_seconds: 1.0  # Max seconds to wait for valid data (polls every 50 ms)
 
+    # Example SHTC3 Ambient 
+    # - type: shtc3
+    #   name: ambient
+    #   enabled: true
+    #   auto_install_packages: false
+    #   settings:
+    #     i2c_address: 0x70
+    #     bus_number: 1
+
+    # Example Waveshare UPS D Hat 
+    # - type: waveshare_ups_d
+    #   name: battery
+    #   enabled: true
+    #   auto_install_packages: false
+    #   settings:
+    #     i2c_address: 0x43
+    #     bus_number: 1
+
+    # Example Waveshare UPS E Hat 
+    # - type: waveshare_ups_e
+    #   name: "battery"
+    #   enabled: true
+    #   auto_install_packages: false
+    #   settings:
+    #     i2c_address: 0x2D  # Waveshare UPS HAT (E) fixed address
+    #     bus_number: 1       # I2C bus number (1 for Raspberry Pi default)
+    #     low_cell_mv: 3150   # Per-cell warning threshold in mV
+
+
+
 # Mesh Network Configuration
 mesh:
   # Unscoped flood policy - controls whether the repeater allows or denies unscoped flooding
@@ -317,7 +343,8 @@ identities:
 #   - kiss          (KISS-modem over a serial port; alias: kiss-modem)
 #   - pymc_tcp      (pymc_usb firmware modem over Wi-Fi/TCP)
 #   - pymc_usb      (pymc_usb firmware modem over USB-CDC)
-radio_type: sx1262
+#   - null/none     (disable radio hardware; daemon starts without RF I/O)
+radio_type: null
 
 # CH341 USB-to-SPI adapter settings (only used when radio_type: sx1262_ch341)
 # NOTE: VID/PID are integers. Hex is also accepted in YAML, e.g. 0x1A86.
@@ -353,8 +380,7 @@ radio:
 #   baud_rate: 9600
 
 # pymc_usb firmware modem over Wi-Fi/TCP (when radio_type: pymc_tcp).
-# Requires pyMC_core with the TCPLoRaRadio driver (PR pyMC-dev/pyMC_core#68,
-# merged into dev on 2026-05-13).
+# Requires pyMC_core with the TCPLoRaRadio driver
 # pymc_tcp:
 #   host: "pymc-3e2834.local"   # modem hostname / mDNS name / LAN IP
 #   port: 5055                  # firmware default
@@ -364,7 +390,7 @@ radio:
 #   lbt_max_attempts: 5
 
 # pymc_usb firmware modem over USB-CDC (when radio_type: pymc_usb).
-# Requires pyMC_core with the USBLoRaRadio driver (PR pyMC-dev/pyMC_core#68).
+# Requires pyMC_core with the USBLoRaRadio driver
 # pymc_usb:
 #   port: "/dev/ttyACM0"        # USB-CDC device; udev rule may symlink to /dev/lora-modem
 #   baudrate: 921600            # must match firmware monitor_speed

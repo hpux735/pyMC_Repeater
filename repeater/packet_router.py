@@ -160,7 +160,7 @@ class PacketRouter:
                 pass
         await self.queue.put(packet)
 
-    async def inject_packet(self, packet, wait_for_ack: bool = False):
+    async def inject_packet(self, packet, wait_for_ack: bool = False, origin_hash=None):
         try:
             metadata = {
                 "rssi": getattr(packet, "rssi", 0),
@@ -181,6 +181,32 @@ class PacketRouter:
 
             # Mark so when this packet is dequeued we don't pass to engine again (avoid double-send / double-count)
             packet._injected_for_tx = True
+
+            # Echo this local TX to companion frame server clients as raw RX
+            # (PUSH_CODE_LOG_RX_DATA 0x88, snr=0/rssi=0 = local origin) so apps that
+            # decrypt locally from raw RX (e.g. RemoteTerm) see companion-originated
+            # traffic, matching what other mesh nodes would hear off the air. The
+            # originating companion (origin_hash) is excluded so it never hears its own TX.
+            push_rx = getattr(self.daemon, "_on_raw_rx_for_companions", None)
+            if push_rx is not None:
+                try:
+                    raw = packet.write_to()
+                    await push_rx(raw, 0, 0.0, exclude_hash=origin_hash)
+                    servers = getattr(self.daemon, "companion_frame_servers", [])
+                    pushed = sum(
+                        1
+                        for fs in servers
+                        if getattr(fs, "companion_hash", None) != origin_hash
+                    )
+                    logger.debug(
+                        "Echoed injected TX as raw RX (0x88) to %d companion client(s) "
+                        "(%d bytes, origin=%s excluded)",
+                        pushed,
+                        len(raw),
+                        origin_hash,
+                    )
+                except Exception as e:
+                    logger.debug("Failed to echo injected TX to companions: %s", e)
 
             # Enqueue so router can deliver to companion(s): TXT_MSG -> dest bridge, ACK -> all bridges (sender sees ACK)
             await self.enqueue(packet)

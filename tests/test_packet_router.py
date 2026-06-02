@@ -214,6 +214,29 @@ class TestInFlightCap(unittest.IsolatedAsyncioTestCase):
         daemon.repeater_handler.assert_awaited_once()
         mock_warn.assert_called()
 
+    async def test_expected_drop_reason_is_debug_not_warning(self):
+        """Policy drops should log as debug to avoid false-alarm warnings."""
+        daemon = _make_daemon()
+
+        async def _handler(packet, metadata):
+            packet._repeater_drop_reason = "Max flood hops limit reached (21/20)"
+            return False
+
+        daemon.repeater_handler = AsyncMock(side_effect=_handler)
+        router = PacketRouter(daemon)
+        pkt = _make_packet(payload_type=0x04)
+        pkt.header = 0x11  # type=4, route=FLOOD
+
+        with (
+            patch("repeater.packet_router.logger.debug") as mock_debug,
+            patch("repeater.packet_router.logger.warning") as mock_warn,
+        ):
+            await router._route_packet(pkt)
+
+        daemon.repeater_handler.assert_awaited_once()
+        mock_debug.assert_called()
+        mock_warn.assert_not_called()
+
     # ── 3. Shutdown: in-flight tasks drained ────────────────────────────────
 
     async def test_stop_waits_for_in_flight_tasks(self):

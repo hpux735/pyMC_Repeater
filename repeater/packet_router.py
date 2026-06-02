@@ -25,6 +25,27 @@ logger = logging.getLogger("PacketRouter")
 # so the client is not spammed with duplicate telemetry when the mesh delivers multiple copies.
 _COMPANION_DEDUPE_TTL_SEC = 60.0
 
+# Drop reasons that are normal policy outcomes and should not be warning-level.
+# TODO: create Enum in engine for drop reasons and use it here and in engine instead of string matching.
+_EXPECTED_DROP_REASON_PREFIXES = (
+    "Duplicate",
+    "Max flood hops limit reached",
+    "Path hop count at maximum",
+    "Path would exceed MAX_PATH_SIZE",
+    "Direct: no path",
+    "Direct: not for us",
+    "Unscoped flood policy disabled",
+    "Transport code not allowed to flood",
+    "FLOOD loop detected",
+    "Marked do not retransmit",
+    "Repeat disabled",
+    "No TX mode",
+    "Duty cycle limit",
+    "Empty payload",
+    "Path too long",
+    "Invalid advert packet",
+)
+
 
 def _companion_dedup_key(packet) -> str | None:
     """Return a stable key for companion delivery deduplication, or None if not available."""
@@ -41,6 +62,32 @@ def _is_direct_final_hop(packet) -> bool:
         return False
     path = getattr(packet, "path", None)
     return not path or len(path) == 0
+
+
+def _is_expected_drop_reason(reason: str | None) -> bool:
+    if not isinstance(reason, str) or not reason:
+        return False
+    return any(reason.startswith(prefix) for prefix in _EXPECTED_DROP_REASON_PREFIXES)
+
+
+def _drop_reason_from_recent_packets(handler, packet) -> str | None:
+    """Best-effort drop reason lookup from handler recent packet records."""
+    recent_packets = getattr(handler, "recent_packets", None)
+    if not recent_packets:
+        return None
+    try:
+        packet_hash = packet.calculate_packet_hash().hex().upper()[:16]
+    except Exception:
+        return None
+    for record in reversed(list(recent_packets)):
+        if not isinstance(record, dict):
+            continue
+        if record.get("packet_hash") != packet_hash:
+            continue
+        reason = record.get("drop_reason")
+        if isinstance(reason, str) and reason:
+            return reason
+    return None
 
 
 class PacketRouter:
@@ -510,8 +557,24 @@ class PacketRouter:
             }
             sent = await self.daemon.repeater_handler(packet, metadata)
             if sent is False:
-                logger.warning(
-                    "Inbound packet not transmitted by repeater handler (type=%s, header=0x%02x)",
-                    payload_type,
-                    getattr(packet, "header", 0),
-                )
+                drop_reason = getattr(packet, "_repeater_drop_reason", None)
+                if not isinstance(drop_reason, str):
+                    drop_reason = _drop_reason_from_recent_packets(
+                        self.daemon.repeater_handler, packet
+                    )
+                if _is_expected_drop_reason(drop_reason):
+                    logger.debug(
+                        "Inbound packet intentionally not transmitted by repeater handler "
+                        "(type=%s, header=0x%02x, reason=%s)",
+                        payload_type,
+                        getattr(packet, "header", 0),
+                        drop_reason,
+                    )
+                else:
+                    logger.warning(
+                        "Inbound packet not transmitted by repeater handler "
+                        "(type=%s, header=0x%02x, reason=%s)",
+                        payload_type,
+                        getattr(packet, "header", 0),
+                        drop_reason or "unknown",
+                    )

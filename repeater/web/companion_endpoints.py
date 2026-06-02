@@ -257,6 +257,10 @@ class CompanionAPIEndpoints:
                     "is_running": b.is_running,
                     "contacts_count": b.contacts.get_count(),
                     "channels_count": b.channels.get_count(),
+                    "max_contacts": b.contacts.max_contacts,
+                    "offline_queue_size": getattr(b.message_queue, "max_size", None)
+                    or getattr(b.message_queue, "_max_size", None)
+                    or 512,
                 }
             )
         return self._success(items)

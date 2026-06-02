@@ -2229,6 +2229,20 @@ class SQLiteHandler:
             return 0
 
     # Companion persistence methods
+    def companion_count_contacts(self, companion_hash: str) -> int:
+        """Return the number of persisted contacts for a companion."""
+        try:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    "SELECT COUNT(*) FROM companion_contacts WHERE companion_hash = ?",
+                    (companion_hash,),
+                )
+                row = cursor.fetchone()
+                return int(row[0]) if row else 0
+        except Exception as e:
+            logger.error(f"Failed to count companion contacts: {e}")
+            return 0
+
     def companion_load_contacts(self, companion_hash: str) -> List[Dict]:
         """Load contacts for a companion from storage."""
         try:

@@ -15,6 +15,12 @@ from repeater.companion.identity_resolve import (
     find_companion_index,
     heal_companion_empty_names,
 )
+from repeater.companion.utils import (
+    CompanionContactCapacityError,
+    merge_companion_settings_update,
+    parse_companion_bridge_kwargs,
+    validate_companion_config_capacity,
+)
 from repeater.config import resolve_storage_dir, update_unscoped_flood_policy
 from repeater.service_utils import get_buildroot_image_info
 
@@ -3021,6 +3027,11 @@ class APIEndpoints:
                 if any(str(c.get("name") or "").strip() == name for c in companions):
                     return self._error(f"Companion with name '{name}' already exists")
 
+                try:
+                    bridge_settings = parse_companion_bridge_kwargs(settings)
+                except ValueError as e:
+                    return self._error(str(e))
+
                 comp_settings = {
                     "node_name": settings.get("node_name") or name,
                     "tcp_port": settings.get("tcp_port", 5000),
@@ -3028,12 +3039,28 @@ class APIEndpoints:
                 }
                 if "tcp_timeout" in settings:
                     comp_settings["tcp_timeout"] = settings["tcp_timeout"]
+                comp_settings.update(bridge_settings)
                 new_identity = {
                     "name": name,
                     "identity_key": identity_key,
                     "type": identity_type,
                     "settings": comp_settings,
                 }
+                sqlite_handler = None
+                if self.repeater_handler and self.repeater_handler.storage:
+                    sqlite_handler = self.repeater_handler.storage.sqlite_handler
+                if sqlite_handler and identity_key:
+                    try:
+                        validate_companion_config_capacity(
+                            new_identity,
+                            sqlite_handler,
+                            companion_name=name,
+                            settings=comp_settings,
+                        )
+                    except CompanionContactCapacityError as e:
+                        return self._error(str(e))
+                    except (ValueError, TypeError) as e:
+                        return self._error(str(e))
                 companions.append(new_identity)
                 self.config["identities"]["companions"] = companions
             else:
@@ -3234,12 +3261,31 @@ class APIEndpoints:
                             pass
 
                 if "settings" in data:
-                    if "settings" not in identity:
-                        identity["settings"] = {}
-                    # Only allow companion settings
-                    for k, v in data["settings"].items():
-                        if k in ("node_name", "tcp_port", "bind_address", "tcp_timeout"):
-                            identity["settings"][k] = v
+                    try:
+                        merged_settings = merge_companion_settings_update(
+                            identity.get("settings") or {},
+                            data["settings"],
+                        )
+                    except ValueError as e:
+                        return self._error(str(e))
+
+                    sqlite_handler = None
+                    if self.repeater_handler and self.repeater_handler.storage:
+                        sqlite_handler = self.repeater_handler.storage.sqlite_handler
+                    if sqlite_handler and identity.get("identity_key"):
+                        try:
+                            validate_companion_config_capacity(
+                                identity,
+                                sqlite_handler,
+                                companion_name=resolved_name,
+                                settings=merged_settings,
+                            )
+                        except CompanionContactCapacityError as e:
+                            return self._error(str(e))
+                        except (ValueError, TypeError) as e:
+                            return self._error(str(e))
+
+                    identity["settings"] = merged_settings
 
                 companions[identity_index] = identity
                 self.config["identities"]["companions"] = companions

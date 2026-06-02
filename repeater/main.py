@@ -7,7 +7,15 @@ import sys
 import socket
 import time
 
-from repeater.companion.utils import validate_companion_node_name, normalize_companion_identity_key
+from repeater.companion.utils import (
+    CompanionContactCapacityError,
+    check_companion_contact_capacity,
+    format_companion_bridge_limits,
+    normalize_companion_identity_key,
+    parse_companion_bridge_kwargs,
+    effective_max_contacts,
+    validate_companion_node_name,
+)
 from repeater.config import get_radio_for_board, load_config, save_config
 from repeater.config_manager import ConfigManager
 from repeater.data_acquisition.glass_handler import GlassHandler
@@ -525,6 +533,16 @@ class RepeaterDaemon:
                                 break
                     return _sync
 
+                bridge_kwargs = parse_companion_bridge_kwargs(settings)
+                max_contacts = effective_max_contacts(bridge_kwargs)
+                if sqlite_handler:
+                    check_companion_contact_capacity(
+                        companion_hash_str,
+                        max_contacts,
+                        sqlite_handler,
+                        companion_name=name,
+                    )
+
                 bridge = RepeaterCompanionBridge(
                     identity=identity,
                     packet_injector=self.router.inject_packet,
@@ -533,6 +551,7 @@ class RepeaterDaemon:
                     sqlite_handler=sqlite_handler,
                     companion_hash=companion_hash_str,
                     on_prefs_saved=_make_sync_node_name_to_config(name),
+                    **bridge_kwargs,
                 )
 
                 # Load contacts from SQLite
@@ -616,11 +635,15 @@ class RepeaterDaemon:
                     identity_type="companion",
                 )
 
+                limits = format_companion_bridge_limits(bridge_kwargs)
                 logger.info(
                     f"Loaded companion '{name}': hash=0x{companion_hash:02x}, "
-                    f"port={tcp_port}, bind={bind_address}, client_idle_timeout_sec={client_idle_timeout_sec}"
+                    f"port={tcp_port}, bind={bind_address}, "
+                    f"client_idle_timeout_sec={client_idle_timeout_sec}{limits}"
                 )
 
+            except CompanionContactCapacityError as e:
+                logger.error("%s", e)
             except Exception as e:
                 logger.error(f"Failed to load companion '{name}': {e}", exc_info=True)
 
@@ -686,6 +709,16 @@ class RepeaterDaemon:
         tcp_timeout_raw = settings.get("tcp_timeout", 120)
         client_idle_timeout_sec = None if tcp_timeout_raw == 0 else int(tcp_timeout_raw)
 
+        bridge_kwargs = parse_companion_bridge_kwargs(settings)
+        max_contacts = effective_max_contacts(bridge_kwargs)
+        if sqlite_handler:
+            check_companion_contact_capacity(
+                companion_hash_str,
+                max_contacts,
+                sqlite_handler,
+                companion_name=name,
+            )
+
         bridge = RepeaterCompanionBridge(
             identity=identity,
             packet_injector=self.router.inject_packet,
@@ -693,6 +726,7 @@ class RepeaterDaemon:
             radio_config=radio_config,
             sqlite_handler=sqlite_handler,
             companion_hash=companion_hash_str,
+            **bridge_kwargs,
         )
 
         if sqlite_handler:
@@ -769,9 +803,11 @@ class RepeaterDaemon:
             identity_type="companion",
         )
 
+        limits = format_companion_bridge_limits(bridge_kwargs)
         logger.info(
             f"Hot-reload: Loaded companion '{name}': hash=0x{companion_hash:02x}, "
-            f"port={tcp_port}, bind={bind_address}, client_idle_timeout_sec={client_idle_timeout_sec}"
+            f"port={tcp_port}, bind={bind_address}, "
+            f"client_idle_timeout_sec={client_idle_timeout_sec}{limits}"
         )
 
     async def _on_raw_rx_for_companions(self, data: bytes, rssi: int, snr: float) -> None:

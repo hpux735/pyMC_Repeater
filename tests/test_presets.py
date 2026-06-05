@@ -89,8 +89,8 @@ def test_get_preset_meshmapper_is_single_broker_mc2mqtt():
     brokers = preset.get("brokers", [])
     assert len(brokers) == 1
     broker = brokers[0]
-    assert broker["host"] == "mqtt.meshmapper.cc"
-    assert broker["audience"] == "mqtt.meshmapper.cc"
+    assert broker["host"] == "mqtt.meshmapper.net"
+    assert broker["audience"] == "mqtt.meshmapper.net"
     assert broker.get("format") == "letsmesh"
 
 

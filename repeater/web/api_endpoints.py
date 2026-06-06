@@ -3551,8 +3551,13 @@ class APIEndpoints:
                     "settings": comp_settings,
                 }
                 sqlite_handler = None
-                if self.repeater_handler and self.repeater_handler.storage:
-                    sqlite_handler = self.repeater_handler.storage.sqlite_handler
+                repeater_handler = (
+                    getattr(self.daemon_instance, "repeater_handler", None)
+                    if self.daemon_instance
+                    else None
+                )
+                if repeater_handler and getattr(repeater_handler, "storage", None):
+                    sqlite_handler = repeater_handler.storage.sqlite_handler
                 if sqlite_handler and identity_key:
                     try:
                         validate_companion_config_capacity(
@@ -3786,8 +3791,13 @@ class APIEndpoints:
                         return self._error(str(e))
 
                     sqlite_handler = None
-                    if self.repeater_handler and self.repeater_handler.storage:
-                        sqlite_handler = self.repeater_handler.storage.sqlite_handler
+                    repeater_handler = (
+                        getattr(self.daemon_instance, "repeater_handler", None)
+                        if self.daemon_instance
+                        else None
+                    )
+                    if repeater_handler and getattr(repeater_handler, "storage", None):
+                        sqlite_handler = repeater_handler.storage.sqlite_handler
                     if sqlite_handler and identity.get("identity_key"):
                         try:
                             validate_companion_config_capacity(

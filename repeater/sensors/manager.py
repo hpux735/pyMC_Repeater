@@ -170,7 +170,9 @@ class SensorManager:
                     next_due_in = min(next_due_in, max(0.0, next_read_at[name] - now))
 
                 if updated:
-                    readings = [latest_by_name[s.name] for s in self.sensors if s.name in latest_by_name]
+                    readings = [
+                        latest_by_name[s.name] for s in self.sensors if s.name in latest_by_name
+                    ]
                     with self._readings_lock:
                         self._latest_readings = readings
             except Exception as exc:

@@ -225,8 +225,9 @@ sensors:
   # Master switch for sensor subsystem
   enabled: true
 
-  # Poll interval for all configured sensors
-  poll_interval_seconds: 10.0
+  # Poll interval for all configured sensors. Keep modem-backed sensors at 60s
+  # or slower so their HTTP stats reads don't contend with modem traffic.
+  poll_interval_seconds: 60.0
 
   # If true, missing Python packages for a sensor may be installed at runtime
   # using "python -m pip install ...".

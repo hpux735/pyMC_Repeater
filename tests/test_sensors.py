@@ -108,6 +108,14 @@ def test_sensor_manager_summary_reflects_sensor_config():
     assert summary["loaded"] == 1
 
 
+def test_sensor_manager_default_poll_interval_is_sixty_seconds():
+    config = {"sensors": {"enabled": True, "definitions": []}}
+
+    manager = SensorManager(config, registry=_TestRegistry)
+
+    assert manager.get_summary()["poll_interval_seconds"] == 60.0
+
+
 def test_sensor_manager_loads_and_reads_sensors_without_stopping_on_failure():
     config = {
         "sensors": {

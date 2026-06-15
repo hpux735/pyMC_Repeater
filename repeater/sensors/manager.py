@@ -131,10 +131,10 @@ class SensorManager:
     def _poll_loop(self) -> None:
         """Background thread: poll sensors at configured interval and cache readings."""
         section = self.config.get("sensors", {})
-        poll_interval = 30.0
+        poll_interval = 60.0
         if isinstance(section, dict):
             try:
-                poll_interval = float(section.get("poll_interval_seconds", 30.0))
+                poll_interval = float(section.get("poll_interval_seconds", 60.0))
             except (TypeError, ValueError):
                 pass
 
@@ -155,10 +155,10 @@ class SensorManager:
 
     def get_summary(self) -> Dict[str, Any]:
         section = self.config.get("sensors", {})
-        poll_interval = 30.0
+        poll_interval = 60.0
         if isinstance(section, dict):
             try:
-                poll_interval = float(section.get("poll_interval_seconds", 30.0))
+                poll_interval = float(section.get("poll_interval_seconds", 60.0))
             except (TypeError, ValueError):
                 pass
 

@@ -130,8 +130,8 @@
       "use_dio2_rf": true,
       "preamble_length": 32
     },
-    "zebraduor0": {
-      "name": "ZebraHatDuo-1W-R0",
+    "zebra-duo-hat-r0": {
+      "name": "ZebraHatDuo-R0-1W",
       "bus_id": 0,
       "cs_id": 0,
       "cs_pin": -1,
@@ -147,8 +147,8 @@
       "use_dio2_rf": true,
       "preamble_length": 32
     },
-    "zebraduor1": {
-      "name": "ZebraHatDuo-1W-R1",
+    "zebra-duo-hat-r1": {
+      "name": "ZebraHatDuo-R1-1W",
       "bus_id": 0,
       "cs_id": 0,
       "cs_pin": -1,

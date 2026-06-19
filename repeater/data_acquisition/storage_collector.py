@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import logging
 import time
 from typing import Optional
@@ -19,6 +20,17 @@ class StorageCollector:
         self.repeater_handler = repeater_handler
         self.glass_publish_callback = None
         self._pending_tasks = set()
+
+        # Dedicated single writer thread for all blocking storage work (the SQLite
+        # write, the cumulative-counts aggregate, RRD updates, and network
+        # publishing). This keeps that work off the asyncio event loop, which it
+        # was previously stalling for seconds per packet on a busy mesh — starving
+        # every other coroutine (e.g. send_advert would time out). One worker
+        # preserves packet write ordering and reuses a single thread-local SQLite
+        # connection (no WAL writer contention, no connection fan-out).
+        self._db_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="storage-writer"
+        )
 
         self.storage_dir = resolve_storage_dir(config)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
@@ -145,7 +157,12 @@ class StorageCollector:
         return stats
 
     def record_packet(self, packet_record: dict, skip_mqtt_if_invalid: bool = True):
-        """Record packet to storage and publish to MQTT
+        """Record a packet to storage and publish it.
+
+        All blocking work — the SQLite write, the cumulative-counts aggregate, the
+        RRD update, and network publishing — runs on the dedicated writer thread so
+        it never blocks the asyncio event loop. Callers treat this as
+        fire-and-forget (the previous synchronous version blocked the loop).
 
         Args:
             packet_record: Dictionary containing packet information
@@ -155,27 +172,32 @@ class StorageCollector:
             f"Recording packet: type={packet_record.get('type')}, "
             f"transmitted={packet_record.get('transmitted')}"
         )
+        self._submit_db(self._record_packet_blocking, packet_record, skip_mqtt_if_invalid)
 
-        # HOT PATH: Store to local databases only (fast, non-blocking)
+    def _submit_db(self, fn, *args):
+        """Run a blocking storage operation on the dedicated writer thread.
+
+        Falls back to running inline only if the executor has already been shut
+        down (process teardown), so late records are not silently dropped.
+        """
+        try:
+            self._db_executor.submit(self._run_db_task, fn, *args)
+        except RuntimeError:
+            self._run_db_task(fn, *args)
+
+    def _run_db_task(self, fn, *args):
+        """Execute a writer-thread task, logging (not raising) on failure."""
+        try:
+            fn(*args)
+        except Exception as e:
+            logger.error(f"Storage writer task failed: {e}", exc_info=True)
+
+    def _record_packet_blocking(self, packet_record: dict, skip_mqtt: bool):
+        """Store, aggregate, update metrics, and publish one packet (writer thread)."""
         self.sqlite_handler.store_packet(packet_record)
         cumulative_counts = self.sqlite_handler.get_cumulative_counts()
         self.rrd_handler.update_packet_metrics(packet_record, cumulative_counts)
-
-        # DEFERRED: Publish to network sinks and WebSocket in background tasks
-        # This prevents network latency from blocking packet processing
-        self._schedule_background(
-            self._deferred_publish,
-            packet_record,
-            skip_mqtt_if_invalid,
-            sync_fallback=self._publish_packet_sync,
-        )
-
-    async def _deferred_publish(self, packet_record: dict, skip_mqtt: bool):
-        """Deferred background task for all network publishing operations."""
-        try:
-            self._publish_packet_sync(packet_record, skip_mqtt)
-        except Exception as e:
-            logger.error(f"Deferred publish failed: {e}", exc_info=True)
+        self._publish_packet_sync(packet_record, skip_mqtt)
 
     def _publish_packet_sync(self, packet_record: dict, skip_mqtt: bool):
         """Publish packet updates synchronously (used when no asyncio loop is active)."""
@@ -421,6 +443,10 @@ class StorageCollector:
         return self.sqlite_handler.get_noise_floor_stats(hours)
 
     def close(self):
+        # Drain and stop the storage writer thread first so pending writes and
+        # publishes complete before MQTT and the DB connections are torn down.
+        self._db_executor.shutdown(wait=True)
+
         # Cancel all pending background tasks
         for task in self._pending_tasks:
             if not task.done():

@@ -1,6 +1,7 @@
 import asyncio
 import concurrent.futures
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -67,8 +68,9 @@ class StorageCollector:
         # Initialize WebSocket handler for real-time updates
         self.websocket_available = False
         self.websocket_has_connected_clients = lambda: False
-        self._last_ws_stats_broadcast: float = 0.0
         self._ws_stats_broadcast_interval_sec: float = 5.0
+        self._stats_stop_event = threading.Event()
+        self._stats_thread: Optional[threading.Thread] = None
         try:
             from .websocket_handler import (
                 broadcast_packet,
@@ -81,6 +83,19 @@ class StorageCollector:
             self.websocket_has_connected_clients = has_connected_clients
             self.websocket_available = True
             logger.info("WebSocket handler initialized for real-time updates")
+
+            # Broadcast aggregate stats on a fixed cadence rather than inline on the
+            # per-packet write path. get_packet_stats(24h) is a multi-second aggregate;
+            # running it inside _record_packet_blocking made the storage writer thread
+            # spend ~1-2s of every 5s on it, competing with packet inserts. A dedicated
+            # tick keeps the writer doing only fast writes and only runs the aggregate
+            # when a dashboard client is actually connected.
+            self._stats_thread = threading.Thread(
+                target=self._stats_broadcast_loop,
+                name="stats-broadcast",
+                daemon=True,
+            )
+            self._stats_thread.start()
         except ImportError:
             logger.debug("WebSocket handler not available")
 
@@ -200,35 +215,48 @@ class StorageCollector:
         self._publish_packet_sync(packet_record, skip_mqtt)
 
     def _publish_packet_sync(self, packet_record: dict, skip_mqtt: bool):
-        """Publish packet updates synchronously (used when no asyncio loop is active)."""
+        """Publish a single packet (glass, per-packet WebSocket event, MQTT).
+
+        Only fast, per-packet work runs here. The aggregate stats broadcast is
+        driven separately by _stats_broadcast_loop so the writer thread is not
+        held by the multi-second get_packet_stats(24h) query.
+        """
         self._publish_to_glass(packet_record, "packet")
 
         if self.websocket_available:
             try:
                 self.websocket_broadcast_packet(packet_record)
-                if self.websocket_has_connected_clients():
-                    now_mono = time.monotonic()
-                    if (
-                        now_mono - self._last_ws_stats_broadcast
-                        >= self._ws_stats_broadcast_interval_sec
-                    ):
-                        self._last_ws_stats_broadcast = now_mono
-                        packet_stats_24h = self.sqlite_handler.get_packet_stats(hours=24)
-                        uptime_seconds = (
-                            time.time() - self.repeater_handler.start_time
-                            if self.repeater_handler
-                            else 0
-                        )
-                        self.websocket_broadcast_stats(
-                            {
-                                "packet_stats": packet_stats_24h,
-                                "system_stats": {"uptime_seconds": uptime_seconds},
-                            }
-                        )
             except Exception as e:
                 logger.debug(f"WebSocket broadcast failed: {e}")
 
         self._publish_packet_to_mqtt(packet_record)
+
+    def _broadcast_stats_once(self) -> None:
+        """Compute the 24h aggregate and broadcast it to WebSocket clients."""
+        packet_stats_24h = self.sqlite_handler.get_packet_stats(hours=24)
+        uptime_seconds = (
+            time.time() - self.repeater_handler.start_time if self.repeater_handler else 0
+        )
+        self.websocket_broadcast_stats(
+            {
+                "packet_stats": packet_stats_24h,
+                "system_stats": {"uptime_seconds": uptime_seconds},
+            }
+        )
+
+    def _stats_broadcast_loop(self) -> None:
+        """Broadcast aggregate stats every interval while clients are connected.
+
+        Runs on its own thread (off the event loop and off the storage writer) so
+        the heavy get_packet_stats(24h) aggregate never sits in the packet write
+        path. Skips the query entirely when no dashboard client is connected.
+        """
+        while not self._stats_stop_event.wait(self._ws_stats_broadcast_interval_sec):
+            try:
+                if self.websocket_has_connected_clients():
+                    self._broadcast_stats_once()
+            except Exception as e:
+                logger.debug(f"Stats broadcast failed: {e}")
 
     def _publish_packet_to_mqtt(self, packet_record: dict):
         """Publish packet to mqtt broker if enabled and allowed.
@@ -443,6 +471,11 @@ class StorageCollector:
         return self.sqlite_handler.get_noise_floor_stats(hours)
 
     def close(self):
+        # Stop the stats broadcast thread.
+        self._stats_stop_event.set()
+        if self._stats_thread is not None:
+            self._stats_thread.join(timeout=2)
+
         # Drain and stop the storage writer thread first so pending writes and
         # publishes complete before MQTT and the DB connections are torn down.
         self._db_executor.shutdown(wait=True)

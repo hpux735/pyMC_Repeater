@@ -19,7 +19,16 @@ class SQLiteHandler:
         self._api_token_last_used_interval_sec = 300
         self._hot_cache_ttl_sec = 60
         self._packet_stats_cache = {}
+        self._packet_type_stats_cache = {}
         self._neighbors_cache = {"timestamp": 0.0, "value": None}
+        # Short time-based cache for the per-packet cumulative-counts aggregate
+        # (two full-table scans). The storage writer thread calls this once per
+        # recorded packet/duplicate; a few seconds of staleness is fine for the
+        # RRD/UI counters and stops a full scan running on every packet.
+        # Intentionally NOT cleared by _invalidate_hot_caches() — that runs on
+        # every write, which would defeat the cache under load.
+        self._cumulative_counts_cache = {"timestamp": 0.0, "value": None}
+        self._cumulative_counts_ttl_sec = 3.0
         # Thread-local storage for persistent SQLite connections.
         # Opening a new connection on every DB call is expensive on SD-card
         # storage: each sqlite3.connect() call triggers file-system operations
@@ -1186,7 +1195,11 @@ class SQLiteHandler:
 
     def get_packet_type_stats(self, hours: int = 24) -> dict:
         try:
-            cutoff = time.time() - (hours * 3600)
+            now = time.time()
+            cached = self._packet_type_stats_cache.get(hours)
+            if cached and (now - cached["timestamp"]) < self._hot_cache_ttl_sec:
+                return cached["value"]
+            cutoff = now - (hours * 3600)
 
             # Align with pyMC_core feat/newRadios PAYLOAD_TYPES (0x0B = CONTROL)
             try:
@@ -1262,13 +1275,15 @@ class SQLiteHandler:
                 if other_count > 0:
                     type_counts["Other Types (>15)"] = other_count
 
-                return {
+                result = {
                     "hours": hours,
                     "packet_type_totals": type_counts,
                     "total_packets": sum(type_counts.values()),
                     "period": f"{hours} hours",
                     "data_source": "sqlite",
                 }
+                self._packet_type_stats_cache[hours] = {"timestamp": now, "value": result}
+                return result
 
         except Exception as e:
             logger.error(f"Failed to get packet type stats from SQLite: {e}")
@@ -1602,6 +1617,11 @@ class SQLiteHandler:
             logger.error(f"Failed to cleanup old data: {e}")
 
     def get_cumulative_counts(self) -> dict:
+        now = time.time()
+        cached = self._cumulative_counts_cache.get("value")
+        cached_ts = float(self._cumulative_counts_cache.get("timestamp", 0.0))
+        if cached is not None and (now - cached_ts) < self._cumulative_counts_ttl_sec:
+            return cached
         try:
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
@@ -1630,12 +1650,14 @@ class SQLiteHandler:
                 """
                 ).fetchone()
 
-                return {
+                result = {
                     "rx_total": int(totals["rx_total"] or 0),
                     "tx_total": int(totals["tx_total"] or 0),
                     "drop_total": int(totals["drop_total"] or 0),
                     "type_counts": type_counts,
                 }
+                self._cumulative_counts_cache = {"timestamp": now, "value": result}
+                return result
 
         except Exception as e:
             logger.error(f"Failed to get cumulative counts: {e}")

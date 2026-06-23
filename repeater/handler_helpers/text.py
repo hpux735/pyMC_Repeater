@@ -579,7 +579,7 @@ class TextHelper:
             try:
                 CryptoUtils.mac_then_decrypt(shared_secret[:16], shared_secret, encrypted_data)
                 return client_info
-            except Exception:
+            except Exception:  # nosec B112
                 continue
 
         return None

@@ -90,12 +90,30 @@ migrate_legacy_paths() {
 
 # Create (or re-create) the dedicated venv for openhop_repeater
 ensure_venv() {
+    local recreate=0
+
     if [ ! -x "$VENV_PYTHON" ]; then
-        echo ">>> Creating virtual environment at $VENV_DIR ..."
-        python3 -m venv --system-site-packages "$VENV_DIR"
-        # Upgrade pip inside the venv
-        "$VENV_PIP" install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
+        recreate=1
+    elif ! "$VENV_PYTHON" -c 'import sys; print(sys.executable)' >/dev/null 2>&1; then
+        # Venv python exists but points to a missing interpreter (stale venv).
+        recreate=1
+    elif ! "$VENV_PYTHON" -m pip --version >/dev/null 2>&1; then
+        # Pip script/shebang can break after Python upgrades; treat as stale.
+        recreate=1
     fi
+
+    if [ "$recreate" -eq 1 ]; then
+        if [ -d "$VENV_DIR" ]; then
+            echo ">>> Rebuilding broken virtual environment at $VENV_DIR ..."
+            rm -rf "$VENV_DIR"
+        else
+            echo ">>> Creating virtual environment at $VENV_DIR ..."
+        fi
+        python3 -m venv --system-site-packages "$VENV_DIR"
+    fi
+
+    # Always use python -m pip so we don't rely on a potentially stale pip wrapper.
+    "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
 }
 
 # Migrate an existing system-pip install into the venv.

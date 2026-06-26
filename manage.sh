@@ -88,6 +88,25 @@ migrate_legacy_paths() {
     migrate_one_path "$LEGACY_PYMC_INSTALL_DIR" "$INSTALL_DIR" "install"
 }
 
+ensure_service_user_home() {
+    local current_home
+
+    if ! id "$SERVICE_USER" &>/dev/null; then
+        return 0
+    fi
+
+    current_home="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
+    if [ -z "$current_home" ]; then
+        return 0
+    fi
+
+    if [ "$current_home" != "$DATA_DIR" ]; then
+        mkdir -p "$DATA_DIR" 2>/dev/null || true
+        usermod -d "$DATA_DIR" "$SERVICE_USER" 2>/dev/null || true
+        echo "    ✓ Updated $SERVICE_USER home directory: $current_home -> $DATA_DIR"
+    fi
+}
+
 # Create (or re-create) the dedicated venv for openhop_repeater
 ensure_venv() {
     local recreate=0
@@ -123,6 +142,7 @@ migrate_to_venv() {
 
     # 1. Ensure the venv exists
     ensure_venv
+    ensure_service_user_home
 
     # 2. Remove legacy PYTHONPATH from the service unit
     local svc_unit="/etc/systemd/system/openhop-repeater.service"
@@ -442,6 +462,7 @@ install_repeater() {
     if ! id "$SERVICE_USER" &>/dev/null; then
         useradd --system --home "$DATA_DIR" --shell /sbin/nologin "$SERVICE_USER"
     fi
+    ensure_service_user_home
 
     disable_legacy_services
 
@@ -886,6 +907,7 @@ upgrade_repeater() {
 
         echo "[1.6/9] Ensuring required directories..."
         mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DATA_DIR"
+        ensure_service_user_home
 
         echo "[2/9] Backing up configuration..."
         if [ -d "$CONFIG_DIR" ]; then

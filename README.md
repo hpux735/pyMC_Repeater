@@ -2,6 +2,8 @@
 
 Lightweight Python MeshCore repeater daemon built on `openhop_core`.
 
+Formerly `pyMC_Repeater` built on `pyMC_core`.
+
 openHop Repeater is designed to run continuously on low-power Linux hardware such
 as Raspberry Pi-class devices, Proxmox LXC containers, and network-attached
 radio modems. It forwards LoRa packets, exposes a web dashboard, and provides

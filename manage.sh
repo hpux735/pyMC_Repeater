@@ -113,19 +113,7 @@ ensure_venv() {
     fi
 
     # Always use python -m pip so we don't rely on a potentially stale pip wrapper.
-    "$VENV_PYTHON" -m ensurepip --upgrade >/dev/null 2>&1 || true
     "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
-
-    # Some older OTA wrappers call $VENV_DIR/bin/pip directly. Debian/Ubuntu
-    # venvs can briefly lack that console script after migrations, so keep a
-    # tiny shim in place for compatibility while new code uses python -m pip.
-    if ! "$VENV_PIP" --version >/dev/null 2>&1 && [ -x "$VENV_PYTHON" ]; then
-        cat > "$VENV_PIP" <<'PIPEOF'
-#!/bin/sh
-exec "$(dirname "$0")/python" -m pip "$@"
-PIPEOF
-        chmod 0755 "$VENV_PIP"
-    fi
 }
 
 # Migrate an existing system-pip install into the venv.
@@ -597,15 +585,7 @@ fi
 if [ ! -x "$VENV_PYTHON" ]; then
     echo "[pymc-do-upgrade] Creating venv at $VENV_DIR ..."
     python3 -m venv --system-site-packages "$VENV_DIR"
-fi
-"$VENV_PYTHON" -m ensurepip --upgrade >/dev/null 2>&1 || true
-"$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
-if ! "$VENV_PIP" --version >/dev/null 2>&1 && [ -x "$VENV_PYTHON" ]; then
-    cat > "$VENV_PIP" <<'PIPEOF'
-#!/bin/sh
-exec "$(dirname "$0")/python" -m pip "$@"
-PIPEOF
-    chmod 0755 "$VENV_PIP"
+    "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
 fi
 # ---- Migration: clean up legacy service unit issues ----
 SVC_UNIT=/etc/systemd/system/openhop-repeater.service
@@ -1040,15 +1020,7 @@ fi
 if [ ! -x "$VENV_PYTHON" ]; then
     echo "[pymc-do-upgrade] Creating venv at $VENV_DIR ..."
     python3 -m venv --system-site-packages "$VENV_DIR"
-fi
-"$VENV_PYTHON" -m ensurepip --upgrade >/dev/null 2>&1 || true
-"$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
-if ! "$VENV_PIP" --version >/dev/null 2>&1 && [ -x "$VENV_PYTHON" ]; then
-    cat > "$VENV_PIP" <<'PIPEOF'
-#!/bin/sh
-exec "$(dirname "$0")/python" -m pip "$@"
-PIPEOF
-    chmod 0755 "$VENV_PIP"
+    "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
 fi
 # ---- Migration: clean up legacy service unit issues ----
 SVC_UNIT=/etc/systemd/system/openhop-repeater.service
